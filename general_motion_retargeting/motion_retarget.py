@@ -549,7 +549,7 @@ class GeneralMotionRetargeting:
         if self.foot_last_pos is None:
             self.foot_last_pos = foot_pos.copy()
 
-        foot_vel = np.clip(np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / (1/30.0), axis=-1) - 0.15, 0.0, 1.0,)
+        foot_vel = np.clip(np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / self.configuration.model.opt.timestep, axis=-1) - 0.15, 0.0, 1.0,)
         self.foot_last_pos = foot_pos.copy()
 
         foot_not_contact = ((foot_tilt + foot_lift + foot_vel) / 1.5).clip(0.0, 1.0)
