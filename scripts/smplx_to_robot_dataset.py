@@ -23,7 +23,7 @@ import psutil
 import tracemalloc
 
 
-def check_memory(threshold_gb=30):  # adjust based on your available memory
+def check_memory(threshold_gb=3):  # adjust based on your available memory
     mem = psutil.virtual_memory()
     used_memory_gb = (mem.total - mem.available) / (1024 ** 3)
     available_memory_gb = mem.available / (1024 ** 3)
@@ -92,6 +92,7 @@ def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_fo
     
     device = "cuda:0"
     kinematics_model = KinematicsModel(retargeter.xml_file, device=device)
+    import ipdb; ipdb.set_trace()
 
     try:
         root_pos = qpos_list[:, :3]

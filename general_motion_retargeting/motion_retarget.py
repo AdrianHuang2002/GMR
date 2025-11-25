@@ -225,7 +225,7 @@ class GeneralMotionRetargeting:
         # Optional: contact post-process on robot side
         qpos = self.configuration.data.qpos.copy()
         qpos = self.postprocess_robot_no_penetration(qpos)
-        self.debug_robot_feet(qpos)
+        # self.debug_robot_feet(qpos)
         # qpos = self.postprocess_robot_contact(qpos)
         return qpos
 
