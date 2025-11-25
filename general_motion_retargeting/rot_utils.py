@@ -3,6 +3,17 @@ import torch
 from scipy.spatial.transform import Rotation as R
 
 
+def flatten_quat_keep_yaw(quat):
+    """
+    quat: [w, x, y, z] in world frame.
+    Make foot flat: zero roll & pitch, keep yaw.
+    """
+    rpy = quatToEuler(quat)         # [roll, pitch, yaw]
+    rpy[0] = 0.0                    # roll -> 0
+    rpy[1] = 0.0                    # pitch -> 0
+    rot_flat = R.from_euler("xyz", rpy)
+    return rot_flat.as_quat(scalar_first=True)   
+
 def quatToEuler(quat):
     """ 将四元数转换为欧拉角(roll, pitch, yaw)。 """
     eulerVec = np.zeros(3)
