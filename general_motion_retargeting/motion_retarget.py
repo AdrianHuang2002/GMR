@@ -192,6 +192,8 @@ class GeneralMotionRetargeting:
             next_error = self.error1()
             num_iter = 0
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
+                print("[GMR_TASK_1] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+                print("[GMR_TASK_1] current errors:", curr_error)
                 curr_error = next_error
                 dt = self.configuration.model.opt.timestep
                 vel1 = mink.solve_ik(
@@ -210,7 +212,11 @@ class GeneralMotionRetargeting:
             self.configuration.integrate_inplace(vel2, dt)
             next_error = self.error2()
             num_iter = 0
+            print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+            print(curr_error - next_error > 0.001, num_iter < self.max_iter, curr_error - next_error)
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
+                print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+                print("[GMR_TASK_2] current errors:", curr_error)
                 curr_error = next_error
                 # Solve the IK problem with the second task
                 dt = self.configuration.model.opt.timestep
@@ -322,67 +328,6 @@ class GeneralMotionRetargeting:
             human_data[body_name][0] = pos - np.array([0, 0, self.ground_offset])
         return human_data
     
-    def preprocess_contact_data_SE3(self, human_data): 
-        human_feet_names = [k for k in human_data.keys() if "foot" in k]
-        if len(human_feet_names) >= 2:
-            left_name  = [n for n in human_feet_names if "left"  in n][0]
-            right_name = [n for n in human_feet_names if "right" in n][0]
-
-            left_pos,  left_quat  = human_data[left_name]
-            right_pos, right_quat = human_data[right_name]
-
-            foot_pos = np.array([left_pos, right_pos], dtype=float)
-            foot_quat = np.array([left_quat, right_quat], dtype=float)
-            foot_euler = np.array([quatToEuler(foot_quat[0]), quatToEuler(foot_quat[1]),], dtype=float)
-
-            foot_tilt = np.clip((np.abs(foot_euler[:, 0]) + np.abs(foot_euler[:, 1]) - 0.4) / 0.4, 0.0, 1.0)
-            foot_lift = np.clip((foot_pos[:, 2] - 0.15) / 0.15, 0.0, 1.0)
-
-            if self.foot_last_pos is None:
-                self.foot_last_pos = foot_pos.copy()
-
-            foot_vel = np.clip(np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / (1/30), axis=-1) - 0.15, 0.0, 1.0,)
-            self.foot_last_pos = foot_pos.copy()
-
-            foot_not_contact = ((foot_tilt + foot_lift + foot_vel) / 1.5).clip(0.0, 1.0)
-            foot_contact = 1.0 - foot_not_contact
-
-            contact_thresh = 0.8
-
-            if foot_contact[0] > contact_thresh:
-                human_data = self.rigid_align_body_to_ground_SE3_v1(human_data, left_name, ground_height=self.ground[2])
-            if foot_contact[1] > contact_thresh:
-                human_data = self.rigid_align_body_to_ground_SE3_v1(human_data, right_name, ground_height=self.ground[2])
-                
-        return human_data
-    
-    def rigid_align_body_to_ground_SE3_v1(self, human_data, foot_name, ground_height=0.0):
-
-        p_foot_orig, q_foot_orig = human_data[foot_name]
-        R_foot_orig = R.from_quat(q_foot_orig, scalar_first=True).as_matrix()
-
-        p_foot_des = np.array([p_foot_orig[0], p_foot_orig[1], ground_height])
-        q_foot_des = flatten_quat_keep_yaw(q_foot_orig)  
-        R_foot_des = R.from_quat(q_foot_des, scalar_first=True).as_matrix()
-
-        R_delta = R_foot_des @ R_foot_orig.T
-        p_delta = p_foot_des - R_delta @ p_foot_orig
-
-        for name in human_data.keys():
-            p_orig, q_orig = human_data[name]
-
-            R_orig = R.from_quat(q_orig, scalar_first=True).as_matrix()
-
-            p_new = R_delta @ p_orig + p_delta
-            R_new = R_delta @ R_orig
-
-            q_new = R.from_matrix(R_new).as_quat(scalar_first=True)
-
-            human_data[name] = (p_new, q_new)
-
-        return human_data
-
-    
     def postprocess_robot_no_penetration(self, qpos):
         """
         Ensure no robot foot link is below ground.
@@ -423,118 +368,6 @@ class GeneralMotionRetargeting:
                 data.xpos[left_id][2], data.xpos[right_id][2]
             )
         )
-
-    def rigid_align_robot_to_ground_SE3(self, qpos, foot_body_name, ground_height=None):
-        """
-        Use the same rigid alignment idea as `rigid_align_body_to_ground`,
-        but applied to the ROBOT BASE (qpos[0:7]) instead of human_data dict.
-
-        - Takes the current robot state `qpos`.
-        - Reads the given foot's world pose from MuJoCo.
-        - Computes ΔT that:
-            * keeps foot x,y
-            * sets foot z = ground_height
-            * flattens roll/pitch, keeps yaw (via flatten_quat_keep_yaw)
-        - Applies that ΔT to the ROBOT BASE only.
-        """
-        if ground_height is None:
-            ground_height = self.ground[2]
-
-        # --- 1. Get current robot state in world ---
-        data = mj.MjData(self.model)
-        data.qpos[:] = qpos
-        mj.mj_forward(self.model, data)
-
-        foot_id = self.robot_body_names[foot_body_name]
-
-        # MuJoCo stores xquat as [w,x,y,z]
-        p_foot_orig = data.xpos[foot_id].copy()
-        q_foot_orig = data.xquat[foot_id].copy()  # [w,x,y,z]
-
-        R_foot_orig = R.from_quat(q_foot_orig, scalar_first=True).as_matrix()
-
-        # --- 2. Desired grounded pose for that foot ---
-        p_foot_des = np.array([p_foot_orig[0], p_foot_orig[1], ground_height])
-        q_foot_des = flatten_quat_keep_yaw(q_foot_orig)       # [w,x,y,z]
-        R_foot_des = R.from_quat(q_foot_des, scalar_first=True).as_matrix()
-
-        # --- 3. Compute ΔT (same as your human version) ---
-        R_delta = R_foot_des @ R_foot_orig.T
-        p_delta = p_foot_des - R_delta @ p_foot_orig
-
-        # --- 4. Apply ΔT to the ROBOT BASE pose only ---
-        qpos_new = qpos.copy()
-
-        # base pos & quat in MuJoCo qpos (assuming free base)
-        base_pos  = qpos_new[0:3]
-        base_quat = qpos_new[3:7]  # [w,x,y,z]
-
-        R_base = R.from_quat(base_quat, scalar_first=True).as_matrix()
-
-        base_pos_new  = R_delta @ base_pos + p_delta
-        R_base_new    = R_delta @ R_base
-        base_quat_new = R.from_matrix(R_base_new).as_quat(scalar_first=True)
-
-        qpos_new[0:3] = base_pos_new
-        qpos_new[3:7] = base_quat_new
-
-        return qpos_new
-
-    def postprocess_robot_contact_SE3(self, qpos, dt=1/30.0):
-        data = mj.MjData(self.model)
-        data.qpos[:] = qpos
-        mj.mj_forward(self.model, data)
-
-        left_name  = "left_toe_link"
-        right_name = "right_toe_link"
-        left_id  = self.robot_body_names[left_name]
-        right_id = self.robot_body_names[right_name]
-
-        foot_pos = np.array([data.xpos[left_id], data.xpos[right_id]], dtype=float)
-        foot_quat = np.array([data.xquat[left_id], data.xquat[right_id]], dtype=float)  # [w,x,y,z]
-
-        # tilt
-        foot_euler = np.array([
-            quatToEuler(foot_quat[0]),
-            quatToEuler(foot_quat[1]),
-        ], dtype=float)
-        foot_tilt = np.clip(
-            (np.abs(foot_euler[:, 0]) + np.abs(foot_euler[:, 1]) - 0.4) / 0.4,
-            0.0, 1.0
-        )
-
-        # lift (relative to ground)
-        ground_z = self.ground[2]
-        foot_height = foot_pos[:, 2] - ground_z
-        foot_lift = np.clip((foot_height - 0.15) / 0.15, 0.0, 1.0)
-
-        # velocity
-        if self.robot_foot_last_pos is None:
-            self.robot_foot_last_pos = foot_pos.copy()
-        foot_vel_xy = np.linalg.norm(
-            (foot_pos[..., :2] - self.robot_foot_last_pos[..., :2]) / dt,
-            axis=-1
-        )
-        self.robot_foot_last_pos = foot_pos.copy()
-        foot_vel = np.clip(foot_vel_xy - 0.15, 0.0, 1.0)
-
-        foot_not_contact = ((foot_tilt + foot_lift + foot_vel) / 1.5).clip(0.0, 1.0)
-        foot_contact = 1.0 - foot_not_contact
-
-        contact_thresh = 0.8
-        left_in_contact  = foot_contact[0] > contact_thresh
-        right_in_contact = foot_contact[1] > contact_thresh
-
-        # --- Use rigid alignment on *one* support foot only ---
-        if left_in_contact and not right_in_contact:
-            qpos = self.rigid_align_robot_to_ground_SE3(qpos, left_name, ground_height=ground_z)
-        elif right_in_contact and not left_in_contact:
-            qpos = self.rigid_align_robot_to_ground_SE3(qpos, right_name, ground_height=ground_z)
-        else:
-            # double support or no clear support: maybe just do a simple z-fix
-            qpos = self.postprocess_robot_no_penetration(qpos)
-
-        return qpos
     
     def preprocess_contact_data(self, human_data): 
         left_pos,  left_quat  = human_data["left_foot"]
