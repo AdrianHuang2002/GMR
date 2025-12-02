@@ -192,8 +192,8 @@ class GeneralMotionRetargeting:
             next_error = self.error1()
             num_iter = 0
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
-                print("[GMR_TASK_1] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
-                print("[GMR_TASK_1] current errors:", curr_error)
+                # print("[GMR_TASK_1] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+                # print("[GMR_TASK_1] current errors:", curr_error)
                 curr_error = next_error
                 dt = self.configuration.model.opt.timestep
                 vel1 = mink.solve_ik(
@@ -212,11 +212,11 @@ class GeneralMotionRetargeting:
             self.configuration.integrate_inplace(vel2, dt)
             next_error = self.error2()
             num_iter = 0
-            print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
-            print(curr_error - next_error > 0.001, num_iter < self.max_iter, curr_error - next_error)
+            # print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+            # print(curr_error - next_error > 0.001, num_iter < self.max_iter, curr_error - next_error)
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
-                print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
-                print("[GMR_TASK_2] current errors:", curr_error)
+                # print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+                # print("[GMR_TASK_2] current errors:", curr_error)
                 curr_error = next_error
                 # Solve the IK problem with the second task
                 dt = self.configuration.model.opt.timestep
