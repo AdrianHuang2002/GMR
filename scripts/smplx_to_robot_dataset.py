@@ -90,7 +90,7 @@ def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_fo
 
     log_memory("After retargeting")
     
-    device = "cuda:0"
+    device = "cpu"
     kinematics_model = KinematicsModel(retargeter.xml_file, device=device)
 
     try:

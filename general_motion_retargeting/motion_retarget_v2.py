@@ -3,11 +3,10 @@ import mink
 import mujoco as mj
 import numpy as np
 import json
-import torch
 from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from rich import print
-from .rot_utils import quatToEuler, flatten_quat_keep_yaw, slerp
+from .rot_utils import quatToEuler, flatten_quat_keep_yaw
 
 class GeneralMotionRetargeting:
     """General Motion Retargeting (GMR).
@@ -109,32 +108,6 @@ class GeneralMotionRetargeting:
         self.setup_retarget_configuration()
         
         self.ground_offset = 0.0
-        self.human_to_robot_tracking = {
-            # Core body
-            "pelvis": "pelvis",
-            "spine3": "torso_link",
-
-            # Left leg
-            # "left_hip": "left_hip_roll_link",
-            # "left_knee": "left_knee_link",
-            "left_foot": "left_ankle_roll_link",
-
-            # Right leg
-            # "right_hip": "right_hip_roll_link",
-            # "right_knee": "right_knee_link",
-            "right_foot": "right_ankle_roll_link",
-
-            # Left arm
-            # "left_shoulder": "left_shoulder_roll_link",
-            "left_elbow": "left_elbow_link",
-            "left_wrist": "left_wrist_yaw_link",
-
-            # Right arm
-            # "right_shoulder": "right_shoulder_roll_link",
-            "right_elbow": "right_elbow_link",
-            "right_wrist": "right_wrist_yaw_link",
-        }
-
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
@@ -189,9 +162,8 @@ class GeneralMotionRetargeting:
             human_data = self.offset_human_data_to_ground(human_data)
         # (A) optional: contact fixes in original human frame
         human_data = self.preprocess_contact_data(human_data)
-        tracking_links_pos = self.get_raw_human_tracking_targets(human_data)
-        
         self.scaled_human_data = human_data
+
         if self.use_ik_match_table1:
             for body_name in self.human_body_to_task1.keys():
                 task = self.human_body_to_task1[body_name]
@@ -203,12 +175,11 @@ class GeneralMotionRetargeting:
                 task = self.human_body_to_task2[body_name]
                 pos, rot = human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
-        # tracking_links_pos = self.get_human_tracking_targets()
-        return tracking_links_pos
-
+            
+            
     def retarget(self, human_data, offset_to_ground=False):
         # Update the task targets
-        tracking_links_pos = self.update_targets(human_data, offset_to_ground)
+        self.update_targets(human_data, offset_to_ground)
 
         if self.use_ik_match_table1:
             # Solve the IK problem
@@ -221,6 +192,9 @@ class GeneralMotionRetargeting:
             next_error = self.error1()
             num_iter = 0
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
+                # print("[GMR_TASK_1] vel1 with damping: ", vel1.sum(), self.damping)
+                # print("[GMR_TASK_1] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+                # print("[GMR_TASK_1] current errors:", curr_error)
                 curr_error = next_error
                 dt = self.configuration.model.opt.timestep
                 vel1 = mink.solve_ik(
@@ -239,8 +213,12 @@ class GeneralMotionRetargeting:
             self.configuration.integrate_inplace(vel2, dt)
             next_error = self.error2()
             num_iter = 0
-
+            # print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+            # print(curr_error - next_error > 0.001, num_iter < self.max_iter, curr_error - next_error)
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
+                # print("[GMR_TASK_2] vel2 with damping: ", vel2.sum(), self.damping)
+                # print("[GMR_TASK_2] IK iteration {}, error: {:.6f}".format(num_iter, curr_error - next_error))
+                # print("[GMR_TASK_2] current errors:", curr_error)
                 curr_error = next_error
                 # Solve the IK problem with the second task
                 dt = self.configuration.model.opt.timestep
@@ -253,18 +231,22 @@ class GeneralMotionRetargeting:
                 num_iter += 1
 
         # Optional: contact post-process on robot side
-        # qpos = self.configuration.data.qpos.copy()
-        qpos = self.postprocess_robot_no_penetration()
-        self.debug_robot_feet(qpos)
+        qpos = self.configuration.data.qpos.copy()
+        qpos = self.postprocess_robot_no_penetration(qpos)
+        # self.debug_robot_feet(qpos)
         # qpos = self.postprocess_robot_contact(qpos)
-        return qpos, tracking_links_pos
+        return qpos
+    
+    def error1_components(self):
+        per_task_errors = [task.compute_error(self.configuration) for task in self.tasks1]
+        per_task_norms = {task: np.linalg.norm(e) for task, e in zip(self.tasks1, per_task_errors)}
+        global_err = np.linalg.norm(np.concatenate(per_task_errors))
+        import ipdb; ipdb.set_trace()
+        return global_err, per_task_norms 
 
     def error1(self):
-        return np.linalg.norm(
-            np.concatenate(
-                [task.compute_error(self.configuration) for task in self.tasks1]
-            )
-        )
+        global_err, _ = self.error1_components()
+        return global_err
     
     def error2(self):
         return np.linalg.norm(
@@ -352,55 +334,46 @@ class GeneralMotionRetargeting:
             human_data[body_name][0] = pos - np.array([0, 0, self.ground_offset])
         return human_data
     
-    def postprocess_robot_no_penetration(self):
+    def postprocess_robot_no_penetration(self, qpos):
         """
         Ensure no robot foot link is below ground.
-        Uses current configuration.data (assumed up-to-date after IK).
-        Does NOT modify internal state; returns a corrected qpos copy.
+        This does *not* change foot orientation, only shifts the whole robot up if needed.
         """
-        data = self.configuration.data   # mink's internal MjData
-        qpos = data.qpos.copy()          
+        data = mj.MjData(self.model)
+        data.qpos[:] = qpos
+        mj.mj_forward(self.model, data)
 
         left_id  = self.robot_body_names["left_toe_link"]
         right_id = self.robot_body_names["right_toe_link"]
 
-        foot_pos = np.array(
-            [data.xpos[left_id], data.xpos[right_id]],
-            dtype=float,
-        )
+        foot_pos = np.array([
+            data.xpos[left_id],
+            data.xpos[right_id],
+        ], dtype=float)
 
-        ground_z = self.ground[2]  # or 0.0
+        ground_z = self.ground[2]  # or 0.0 if your world ground is z=0
         min_z = foot_pos[:, 2].min()
 
         if min_z < ground_z:
             # shift entire robot up so the lowest foot is exactly on the ground
             qpos[2] += (ground_z - min_z)
 
-        return qpos
+        return qpos.copy()
 
     def debug_robot_feet(self, qpos):
-        """Check if feet are below ground for a given qpos."""
-        # Build a fresh MjData and run FK with this qpos
         data = mj.MjData(self.model)
         data.qpos[:] = qpos
         mj.mj_forward(self.model, data)
-
-        # Use BODY IDs, not DOF IDs
-        left_id  = self.robot_body_names["left_toe_link"]   # or "left_ankle_roll_link"
-        right_id = self.robot_body_names["right_toe_link"]  # or "right_ankle_roll_link"
-
-        left_z  = data.xpos[left_id][2]
-        right_z = data.xpos[right_id][2]
-        ground_z = self.ground[2]  # usually 0.0
-
-        if left_z < ground_z or right_z < ground_z:
-            print("[WARNING] Robot foot penetration detected!")
-            print(f"  left_z  = {left_z:.6f}")
-            print(f"  right_z = {right_z:.6f}")
-            print(f"  ground  = {ground_z:.6f}")
-        # else:
-        #     print(f"[OK] Feet above ground: L={left_z:.6f}, R={right_z:.6f}")
-
+        
+        # Replace with your actual foot body names
+        left_id  = self.robot_body_names["left_toe_link"]
+        right_id = self.robot_body_names["right_toe_link"]
+        
+        print(
+            "[DEBUG] robot foot z: L={:.4f}, R={:.4f}".format(
+                data.xpos[left_id][2], data.xpos[right_id][2]
+            )
+        )
     
     def preprocess_contact_data(self, human_data): 
         left_pos,  left_quat  = human_data["left_foot"]
@@ -414,68 +387,27 @@ class GeneralMotionRetargeting:
 
         if self.foot_last_pos is None:
             self.foot_last_pos = foot_pos.copy()
-        foot_vel = np.clip((np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / (1/30), axis=-1) - 0.1) / 0.1, 0.0, 1.0,)
-        
+
+        foot_vel = np.clip(np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / self.configuration.model.opt.timestep, axis=-1) - 0.15, 0.0, 1.0,)
         self.foot_last_pos = foot_pos.copy()
 
         foot_not_contact = ((foot_tilt + foot_lift + foot_vel) / 1.5).clip(0.0, 1.0)
         foot_contact = 1.0 - foot_not_contact
 
-        enter = 0.4
-        full  = 0.8
-        x = np.clip((foot_contact - enter) / (full - enter), 0.0, 1.0)
+        contact_thresh = 0.3
 
-        # contact_thresh = 0.3
-        on_ground = (x[0] >= full) or (x[1] >= full)
-        print(f"foot_contact = {foot_contact}, x = {x}")
-        # Left
-        pos, quat = human_data["left_foot"]
-        flat_quat = flatten_quat_keep_yaw(quat)
-        if foot_contact[0] >= enter:
-            human_data["left_foot"] = (pos, slerp(torch.tensor(quat), torch.tensor(flat_quat), torch.tensor(x[0])))
+        if foot_contact[0] > contact_thresh:
+            pos, quat = human_data["left_foot"]
+            flat_quat = flatten_quat_keep_yaw(quat)       
+            human_data["left_foot"] = (pos, flat_quat)
+            human_data = self.offset_human_data_to_ground(human_data)
 
-        # Right
-        pos, quat = human_data["right_foot"]
-        flat_quat = flatten_quat_keep_yaw(quat)
-        if foot_contact[1] >= enter:
-            human_data["right_foot"] = (pos, slerp(torch.tensor(quat), torch.tensor(flat_quat), torch.tensor(x[1])))
-
-        if on_ground:
+        if foot_contact[1] > contact_thresh:
+            pos, quat = human_data["right_foot"]
+            flat_quat = flatten_quat_keep_yaw(quat)
+            human_data["right_foot"] = (pos, flat_quat)
             human_data = self.offset_human_data_to_ground(human_data)
 
         return human_data
-    
-    def get_human_tracking_targets(self):
-        """Use the IK task SE3 target directly for visualization."""
-        targets = {}
 
-        for human_name, task in self.human_body_to_task1.items():
-            robot_link = self.human_to_robot_tracking.get(human_name, None)
-            if robot_link is None:
-                continue
-            
-            se3 = task.transform_target_to_world
-            pos = np.array(se3.translation())
-            quat = np.array(se3.rotation().wxyz)
-            
-            targets[robot_link] = (pos, quat)
-
-        return targets
-    
-    def get_raw_human_tracking_targets(self, human_data):
-        """
-        Build tracking targets directly from *raw* SMPL data,
-        with NO scaling / offsets / ground / contact tweaks.
-        human_data: dict[human_name] = (pos, quat) or [pos, quat]
-        """
-        # ensure numpy arrays + list->tuple consistency
-        human_data = self.to_numpy(human_data)
-        targets = {}
-        for human_name, robot_link in self.human_to_robot_tracking.items():
-            if human_name not in human_data:
-                continue
-            pos, quat = human_data[human_name]
-            # pos, quat are already np.ndarray from to_numpy
-            targets[robot_link] = (pos, quat)
-
-        return targets
+   

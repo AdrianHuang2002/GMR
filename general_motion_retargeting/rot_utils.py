@@ -3,6 +3,41 @@ import torch
 from scipy.spatial.transform import Rotation as R
 
 
+def slerp(q1: torch.Tensor, q2: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """
+    Spherical linear interpolation between two quaternions.
+
+    Args:
+        q1: The first quaternion in (w, x, y, z). Shape is (..., 4).
+        q2: The second quaternion in (w, x, y, z). Shape is (..., 4).
+        t: The interpolation factor. Shape is (...,).
+
+    Returns:
+        The interpolated quaternion in (w, x, y, z). Shape is (..., 4).
+    """
+    assert len(t.shape) == len(q1.shape) - 1, "Shape of t must be (...,)"
+    cos_half_theta = torch.sum(q1 * q2, dim=-1)
+
+    neg_mask = cos_half_theta < 0
+    q2 = torch.where(neg_mask.unsqueeze(-1), -q2, q2)
+
+    cos_half_theta = torch.abs(cos_half_theta)
+    cos_half_theta = torch.unsqueeze(cos_half_theta, dim=-1)
+
+    half_theta = torch.acos(cos_half_theta)
+    sin_half_theta = torch.sqrt(1.0 - cos_half_theta * cos_half_theta)
+
+    t = t.unsqueeze(-1)
+    ratioA = torch.sin((1 - t) * half_theta) / sin_half_theta
+    ratioB = torch.sin(t * half_theta) / sin_half_theta
+
+    new_q = ratioA * q1 + ratioB * q2
+
+    new_q = torch.where(torch.abs(sin_half_theta) < 0.001, 0.5 * q1 + 0.5 * q2, new_q)
+    new_q = torch.where(torch.abs(cos_half_theta) >= 1, q1, new_q)
+
+    return new_q
+
 def flatten_quat_keep_yaw(quat):
     """
     quat: [w, x, y, z] in world frame.
