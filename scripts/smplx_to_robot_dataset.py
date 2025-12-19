@@ -222,13 +222,15 @@ def main():
     
     # remove hard and infeasible motions
     exclude_file_content = ["BMLrub", "EKUT", "crawl", "_lie", "upstairs", "downstairs"]
-    
+    hard_motions_lower = {m.lower() for m in hard_motions}
+    exclude_lower = [c.lower() for c in exclude_file_content]
     new_args_list = []
     for arguments in args_list:
         motion_name = arguments[0].split("/")[-1].split('.')[0]
-        if motion_name in hard_motions:
+        motion_lower = motion_name.lower()
+        if motion_lower in hard_motions_lower:
             continue
-        if any(content in motion_name for content in exclude_file_content):
+        if any(content in motion_lower for content in exclude_file_content):
             continue
         new_args_list.append(arguments)
     args_list = new_args_list
