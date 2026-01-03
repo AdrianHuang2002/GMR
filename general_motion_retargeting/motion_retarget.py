@@ -5,6 +5,7 @@ import numpy as np
 import json
 import torch
 from scipy.spatial.transform import Rotation as R
+from scipy.signal import butter, sosfilt, sosfilt_zi
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from rich import print
 from .rot_utils import quatToEuler, flatten_quat_keep_yaw, slerp
@@ -21,6 +22,7 @@ class GeneralMotionRetargeting:
         damping: float=5e-1, # change from 1e-1 to 1e-2.
         verbose: bool=True,
         use_velocity_limit: bool=False,
+        aligned_fps: float = None,
     ) -> None:
 
         # load the robot model
@@ -100,6 +102,7 @@ class GeneralMotionRetargeting:
         self.foot_last_pos = None
         self.foot_contact_list = []
         self.robot_foot_last_pos = None
+        self.dt = 1.0 / aligned_fps
 
         self.ik_limits = [mink.ConfigurationLimit(self.model)]
         if use_velocity_limit:
@@ -182,14 +185,14 @@ class GeneralMotionRetargeting:
     def update_targets(self, human_data, offset_to_ground=False):
         # scale human data in local frame
         human_data = self.to_numpy(human_data)
+        # tracking_links_pos = self.get_raw_human_tracking_targets(human_data)
         human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
         human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
         human_data = self.apply_ground_offset(human_data)
+        human_data = self.preprocess_contact_data(human_data)
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
         # (A) optional: contact fixes in original human frame
-        human_data = self.preprocess_contact_data(human_data)
-        tracking_links_pos = self.get_raw_human_tracking_targets(human_data)
         
         self.scaled_human_data = human_data
         if self.use_ik_match_table1:
@@ -203,7 +206,7 @@ class GeneralMotionRetargeting:
                 task = self.human_body_to_task2[body_name]
                 pos, rot = human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
-        # tracking_links_pos = self.get_human_tracking_targets()
+        tracking_links_pos = self.get_human_tracking_targets()
         return tracking_links_pos
 
     def retarget(self, human_data, offset_to_ground=False):
@@ -253,9 +256,9 @@ class GeneralMotionRetargeting:
                 num_iter += 1
 
         # Optional: contact post-process on robot side
-        # qpos = self.configuration.data.qpos.copy()
-        qpos = self.postprocess_robot_no_penetration()
-        self.debug_robot_feet(qpos)
+        qpos = self.configuration.data.qpos.copy()
+        # qpos = self.postprocess_robot_no_penetration()
+        # self.debug_robot_feet(qpos)
         # qpos = self.postprocess_robot_contact(qpos)
         return qpos, tracking_links_pos
 
@@ -372,9 +375,8 @@ class GeneralMotionRetargeting:
         ground_z = self.ground[2]  # or 0.0
         min_z = foot_pos[:, 2].min()
 
-        if min_z < ground_z:
-            # shift entire robot up so the lowest foot is exactly on the ground
-            qpos[2] += (ground_z - min_z)
+        # shift entire robot up so the lowest foot is exactly on the ground
+        qpos[2] += (ground_z - min_z)
 
         return qpos
 
@@ -402,46 +404,92 @@ class GeneralMotionRetargeting:
         #     print(f"[OK] Feet above ground: L={left_z:.6f}, R={right_z:.6f}")
 
     
-    def preprocess_contact_data(self, human_data): 
-        left_pos,  left_quat  = human_data["left_foot"]
+    def preprocess_contact_data(self, human_data):
+        """
+        Support-foot rule (global z-shift once per frame) + per-foot rotation flatten (local).
+        - Choose support foot = argmax(contact weight x)
+        - Compute one ground_offset so support foot z -> ground_z (blended by support weight)
+        - Apply this offset ONCE to all bodies (global)
+        - Flatten each foot rotation (roll/pitch) using slerp with its own x[i] (local)
+        """
+
+        left_pos, left_quat = human_data["left_foot"]
         right_pos, right_quat = human_data["right_foot"]
 
-        foot_pos = np.array([left_pos, right_pos], dtype=float)
-        foot_quat = np.array([left_quat, right_quat], dtype=float)
-        foot_euler = np.array([quatToEuler(foot_quat[0]), quatToEuler(foot_quat[1]),], dtype=float)
+        foot_pos = np.array([left_pos, right_pos], dtype=float)   # (2,3)
+        foot_quat = np.array([left_quat, right_quat], dtype=float)  # (2,4)
+
+        # --------- contact confidence ----------
+        foot_euler = np.array(
+            [quatToEuler(foot_quat[0]), quatToEuler(foot_quat[1])],
+            dtype=float,
+        )
         foot_tilt = np.clip((np.abs(foot_euler[:, 0]) + np.abs(foot_euler[:, 1]) - 0.4) / 0.4, 0.0, 1.0)
         foot_lift = np.clip((foot_pos[:, 2] - 0.15) / 0.15, 0.0, 1.0)
 
         if self.foot_last_pos is None:
             self.foot_last_pos = foot_pos.copy()
-        foot_vel = np.clip((np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / (1/30), axis=-1) - 0.1) / 0.1, 0.0, 1.0,)
-        
+
+        foot_vel = np.clip(
+            (np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / self.dt, axis=-1) - 0.1) / 0.1,
+            0.0, 1.0,
+        )
         self.foot_last_pos = foot_pos.copy()
 
         foot_not_contact = ((foot_tilt + foot_lift + foot_vel) / 1.5).clip(0.0, 1.0)
         foot_contact = 1.0 - foot_not_contact
 
         enter = 0.4
-        full  = 0.8
-        x = np.clip((foot_contact - enter) / (full - enter), 0.0, 1.0)
+        full  = 0.9
+        x_raw = np.clip((foot_contact - enter) / (full - enter), 0.0, 1.0)
+        alpha = 0.3
+        x = alpha * x_raw + (1 - alpha) * getattr(self, "prev_x", x_raw)
+        self.prev_x = x
 
-        # contact_thresh = 0.3
-        on_ground = (x[0] >= full) or (x[1] >= full)
-        print(f"foot_contact = {foot_contact}, x = {x}")
+        # --------- Support-foot rule: compute ONE global z offset ----------
+        ground_z = float(getattr(self, "ground", np.array([0.0, 0.0, 0.0]))[2])
+
+        # pick support foot by confidence
+        support_idx = int(np.argmax(x))          
+        w_sup = float(x[support_idx])            
+        z_sup = float(foot_pos[support_idx, 2])  
+
+        dz_support = w_sup * (ground_z - z_sup)
+
+        # anti-penetration shift: ensure lowest foot is not below ground
+        z_min = float(np.min(foot_pos[:, 2]))
+        dz_nopen = ground_z - z_min
+        dz = max(dz_support, dz_nopen)
+        # Apply the global offset ONCE
+        self.set_ground_offset(-dz)
+        human_data = self.apply_ground_offset(human_data)
+
+        # --------- Per-foot rotation flatten (local) ----------
+        # Keep positions as-is (already globally shifted), only adjust orientation with slerp
+
         # Left
         pos, quat = human_data["left_foot"]
+        quat = np.asarray(quat, dtype=float)
         flat_quat = flatten_quat_keep_yaw(quat)
-        if foot_contact[0] >= enter:
-            human_data["left_foot"] = (pos, slerp(torch.tensor(quat), torch.tensor(flat_quat), torch.tensor(x[0])))
+        wl = float(x[0])
+        q_out = slerp(
+            torch.tensor(quat, dtype=torch.float32),
+            torch.tensor(flat_quat, dtype=torch.float32),
+            torch.tensor(wl, dtype=torch.float32),
+        ).detach().cpu().numpy()
+        human_data["left_foot"] = (pos, q_out)
 
         # Right
         pos, quat = human_data["right_foot"]
+        quat = np.asarray(quat, dtype=float)
         flat_quat = flatten_quat_keep_yaw(quat)
-        if foot_contact[1] >= enter:
-            human_data["right_foot"] = (pos, slerp(torch.tensor(quat), torch.tensor(flat_quat), torch.tensor(x[1])))
-
-        if on_ground:
-            human_data = self.offset_human_data_to_ground(human_data)
+        wr = float(x[1])
+        q_out = slerp(
+            torch.tensor(quat, dtype=torch.float32),
+            torch.tensor(flat_quat, dtype=torch.float32),
+            torch.tensor(wr, dtype=torch.float32),
+        ).detach().cpu().numpy()
+        human_data["right_foot"] = (pos, q_out)
 
         return human_data
     
@@ -457,10 +505,51 @@ class GeneralMotionRetargeting:
             se3 = task.transform_target_to_world
             pos = np.array(se3.translation())
             quat = np.array(se3.rotation().wxyz)
+            if robot_link == "right_ankle_roll_link":
+                toe_id = self.robot_body_names["right_toe_link"]
+                pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
+
+            if robot_link == "left_ankle_roll_link":
+                toe_id = self.robot_body_names["left_toe_link"]
+                pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
             
+            if robot_link == "torso_link":
+                p_pelvis_w = self.human_body_to_task1["pelvis"].transform_target_to_world.translation()
+                q_torso_w_wxyz = quat
+                pos, quat = self.pelvis_to_torso_manual(p_pelvis_w, q_torso_w_wxyz)
+                
             targets[robot_link] = (pos, quat)
 
         return targets
+    
+    def convert_child_to_parent_target(self, child_id, p_child_w, q_child_w_wxyz):
+        # child pose relative to its parent (from MuJoCo model)
+        p_child_in_parent = self.model.body_pos[child_id].copy()     # xyz in parent frame
+        q_child_in_parent = self.model.body_quat[child_id].copy()    # wxyz in parent frame
+
+        # rotations
+        R_child_w = R.from_quat(q_child_w_wxyz, scalar_first=True)
+        R_child_parent = R.from_quat(q_child_in_parent, scalar_first=True)
+
+        R_parent_w = R_child_w * R_child_parent.inv()
+
+        p_parent_w = p_child_w - R_parent_w.apply(p_child_in_parent)
+        q_parent_w = R_parent_w.as_quat(scalar_first=True)
+
+        return p_parent_w, q_parent_w
+    
+    def pelvis_to_torso_manual(self, p_pelvis_w, q_torso_w_wxyz):
+        """
+        Compute torso world position from pelvis world position.
+        Torso orientation is assumed to be already known.
+        """
+        # fixed offset from pelvis frame (XML)
+        p_offset = np.array([-0.0039635, 0.0, 0.044], dtype=float)
+
+        R_pelvis = R.from_quat(q_torso_w_wxyz, scalar_first=True)
+        p_torso_w = p_pelvis_w + R_pelvis.apply(p_offset)
+
+        return p_torso_w, q_torso_w_wxyz
     
     def get_raw_human_tracking_targets(self, human_data):
         """

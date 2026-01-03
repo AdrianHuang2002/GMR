@@ -1,13 +1,13 @@
 # Genesis viewer
 export PYTHONPATH=$PYTHONPATH:/Users/huangxiansheng/Project
 python scripts/smplx_to_robot_gs.py \
-    --smplx_file /Users/huangxiansheng/Downloads/01_01_stageii.npz \
+    --smplx_file /Users/huangxiansheng/Downloads/Stefanos_1os_antrikos_karsilamas_C3D_stageii.npz \
     --loop 
     # --smplx_file /Users/huangxiansheng/Downloads/Stefanos_1os_antrikos_karsilamas_C3D_stageii.npz
     
 
 python scripts/vis_robot_motion_gs.py \
-    --robot_motion_path /Users/huangxiansheng/Downloads/01_01_stageii.pkl
+    --robot_motion_path /Users/huangxiansheng/Downloads/dance_db_gmr/01_01_stageii.pkl
 
 # python scripts/retarget_to_redis.py \
 #   --smplx_file /Users/huangxiansheng/Downloads/01_01_stageii.npz \
@@ -24,8 +24,8 @@ mjpython scripts/smplx_to_robot.py \
 
 # Motion directory
 mjpython scripts/smplx_to_robot_dataset.py \
-    --src_folder /Users/huangxiansheng/Downloads/Subject_75_F_MoSh \
-    --tgt_folder /Users/huangxiansheng/Downloads/Subject_75_F_MoSh_GMR \
+    --src_folder /Users/huangxiansheng/Downloads/dance_db \
+    --tgt_folder /Users/huangxiansheng/Downloads/dance_db_gmr \
     --num_cpus 1
 
 # Visualize retargeted motion

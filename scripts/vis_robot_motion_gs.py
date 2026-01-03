@@ -35,11 +35,11 @@ def play_robot_motion(
             if tracking_link_indices is not None:
                 link_pos_all = env.robot.link_positions[0]
                 link_quat_all = env.robot.link_quaternions[0]
-                print(f"\n[Frame {frame_idx}]")
+                # print(f"\n[Frame {frame_idx}]")
                 for name, idx in zip(tracking_link_names, tracking_link_indices):
                     pos = link_pos_all[idx]
                     quat = link_quat_all[idx]
-                    print(f"  {name:25s} pos={pos.tolist()}   quat={quat.tolist()}")
+                    # print(f"  {name:25s} pos={pos.tolist()}   quat={quat.tolist()}")
 
             if show_viewer:
                 env.scene.scene.step(refresh_visualizer=False)

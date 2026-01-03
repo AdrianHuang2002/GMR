@@ -106,7 +106,7 @@ if __name__ == "__main__":
         actual_human_height=actual_human_height,
         src_human="smplx",
         tgt_robot=args.robot,
-        # tracking_link_names=tracking_link_names,
+        aligned_fps = aligned_fps,
     )
 
     qpos_list = []
