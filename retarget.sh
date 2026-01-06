@@ -7,12 +7,12 @@ python scripts/smplx_to_robot_gs.py \
 
 # Benchmark retargeted motion
 mjpython scripts/benchmark_retarget.py \
-    --smplx_file /Users/huangxiansheng/Desktop/retarget/Vasso_Bachata_01_stageii.npz \
+    --smplx_file /Users/huangxiansheng/Desktop/retarget/Stefanos_1os_antrikos_karsilamas_C3D_stageii.npz \
     --robot unitree_g1 
 
 # Headless retargeting
 python scripts/smplx_to_robot_no_viewer.py \
-    --smplx_file /Users/huangxiansheng/Desktop/retarget/Stefanos_1os_antrikos_karsilamas_C3D_stageii.npz \
+    --smplx_file /Users/huangxiansheng/Desktop/retarget/01_01_stageii.npz \
     --save_path /Users/huangxiansheng/Desktop/retarget/01_01_stageii
 
 python scripts/vis_robot_motion_gs.py \

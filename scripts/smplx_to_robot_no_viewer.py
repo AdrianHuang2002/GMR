@@ -53,6 +53,13 @@ if __name__ == "__main__":
         help="Offset root position using the first frame.",
     )
 
+    parser.add_argument(
+        "--contact_filter",
+        default=False,
+        help="Filter contacts to ensure the robot feet on ground.",
+        type=bool,
+    )
+
     args = parser.parse_args()
 
     SMPLX_FOLDER = HERE / ".." / "assets" / "body_models"
@@ -70,35 +77,38 @@ if __name__ == "__main__":
     print(f"Loaded {len(smplx_data_frames)} frames at {aligned_fps} fps")
    
     # Initialize the retargeting system
-    print(f"Initializing retargeter for robot: {args.robot}")
-    retargeter = GMR(
+    print(f"Initializing retarget for robot: {args.robot}")
+    retarget = GMR(
         actual_human_height=actual_human_height,
         src_human="smplx",
         tgt_robot=args.robot,
         aligned_fps=aligned_fps,
+        contact_filter=args.contact_filter,
     )
     
     # Retarget all frames
     print("Retargeting motion...")
     qpos_list = []
-    for smplx_frame_data in smplx_data_frames:
-        qpos, _ = retargeter.retarget(smplx_frame_data)
-        qpos_list.append(qpos.copy())
-    
+    tracking_links_pos_list = []
+    for smplx_frame_data in smplx_data_frames:  
+        # retarget
+        qpos = retarget.retarget(smplx_frame_data)
+        # get tracking links positions
+        tracking_links_pos = retarget.get_human_tracking_targets()
+        qpos_list.append(qpos)
+        tracking_links_pos_list.append(tracking_links_pos)
     qpos_list = np.array(qpos_list)
     print(f"Retargeted {len(qpos_list)} frames")
     
-    # Extract root_pos, root_rot, and dof_pos from qpos
-    root_pos = qpos_list[:, :3]
-    root_rot = qpos_list[:, 3:7]
-    # Convert from wxyz to xyzw
-    root_rot[:, [0, 1, 2, 3]] = root_rot[:, [1, 2, 3, 0]]
-    dof_pos = qpos_list[:, 7:]
+
+    root_pos = np.array([qpos[:3] for qpos in qpos_list])   
+    root_rot = np.array([qpos[3:7][[1,2,3,0]] for qpos in qpos_list])
+    dof_pos = np.array([qpos[7:] for qpos in qpos_list])
     num_frames = root_pos.shape[0]
-    
+
     # Initialize kinematics model
     device = "cpu"
-    kinematics_model = KinematicsModel(retargeter.xml_file, device=device)
+    kinematics_model = KinematicsModel(retarget.xml_file, device=device)
     
     # Compute local body positions (with zero root pos/rot)
     print("Computing forward kinematics for local body positions...")
@@ -120,31 +130,17 @@ if __name__ == "__main__":
         torch.from_numpy(dof_pos).to(device=device, dtype=torch.float)
     )  # Shape: TxNx3 for body_pos, TxNx4 for body_rot
     
-    # Height adjustment
+    # height adjust to ensure the lowerset part is on the ground
+    ground_offset = 0.0
+    lowest_height = None
     if args.height_adjust:
-        print("Adjusting height...")
-        ground_offset = 0.0
         lowest_height = torch.min(body_pos[..., 2]).item()
         root_pos[:, 2] = root_pos[:, 2] - lowest_height + ground_offset
-        # Recompute body_pos and body_rot after height adjustment
-        body_pos, body_rot = kinematics_model.forward_kinematics(
-            torch.from_numpy(root_pos).to(device=device, dtype=torch.float), 
-            torch.from_numpy(root_rot).to(device=device, dtype=torch.float), 
-            torch.from_numpy(dof_pos).to(device=device, dtype=torch.float)
-        )
     
-    # Root origin offset
+    # offset using the first frame
     if args.root_origin_offset:
-        print("Applying root origin offset...")
         root_pos[:, :2] -= root_pos[0, :2]
-        # Recompute body_pos and body_rot after root offset
-        body_pos, body_rot = kinematics_model.forward_kinematics(
-            torch.from_numpy(root_pos).to(device=device, dtype=torch.float), 
-            torch.from_numpy(root_rot).to(device=device, dtype=torch.float), 
-            torch.from_numpy(dof_pos).to(device=device, dtype=torch.float)
-        )
     
-    # Prepare motion data - Version 1: matching smplx_to_robot.py structure
     motion_data_v1 = {
         "fps": aligned_fps,
         "root_pos": root_pos,
@@ -154,16 +150,59 @@ if __name__ == "__main__":
         "link_body_list": None,
     }
     
-    # Prepare motion data - Version 2: with body_pos and other necessary elements
+    # height adjust to ensure the lowerset part is on the ground
+    if args.height_adjust:
+        lowest_z = np.inf
+        for frame in tracking_links_pos_list:
+            for _, (pos, _) in frame.items():
+                z = float(pos[2])
+                if z < lowest_z:
+                    lowest_z = z
+
+        z_shift = lowest_z - ground_offset  # subtract this from every target z
+
+        for frame in tracking_links_pos_list:
+            for k, (pos, quat) in frame.items():
+                pos2 = np.asarray(pos).copy()
+                pos2[2] -= z_shift
+                frame[k] = (pos2, quat)
+
+    # offset using the first frame
+    if args.root_origin_offset:
+        xy_offset = np.asarray(tracking_links_pos_list[0]["pelvis"][0], dtype=float)[:2].copy()
+    else:
+        xy_offset = np.zeros(2, dtype=float)
+
+    pelvis_pos_list = []
+    pelvis_quat_list = []
+    tracking_links_pos_no_pelvis = []
+
+    for frame in tracking_links_pos_list:
+        pelvis_pos, pelvis_quat = frame["pelvis"]
+        pelvis_pos2 = np.asarray(pelvis_pos, dtype=float).copy()
+        pelvis_pos2[:2] -= xy_offset
+        pelvis_pos_list.append(pelvis_pos2)
+        pelvis_quat_list.append(np.asarray(pelvis_quat, dtype=float))
+
+        filtered = {}
+        for k, (pos, quat) in frame.items():
+            if k == "pelvis":
+                continue
+            pos2 = np.asarray(pos, dtype=float).copy()
+            pos2[:2] -= xy_offset
+            filtered[k] = (pos2, quat)
+        tracking_links_pos_no_pelvis.append(filtered)
+
+    pelvis_pos_list = np.asarray(pelvis_pos_list)
+    pelvis_quat_list = np.asarray(pelvis_quat_list)
+    
     motion_data_v2 = {
         "fps": aligned_fps,
-        "body_pos": body_pos.detach().cpu().numpy(),  # Global body positions (TxNx3)
-        "body_rot": body_rot.detach().cpu().numpy(),  # Global body rotations (TxNx4, quaternions)
-        "link_body_list": body_names,
+        "root_pos": pelvis_pos_list,  # Pelvis position as root (list of arrays)
+        "root_rot": pelvis_quat_list,  # Pelvis quaternion as root rotation (list of arrays)
+        "tracking_links_pos": tracking_links_pos_no_pelvis,  # All tracking links positions and rotations (without pelvis)
     }
 
-    retargeter.calculate_error_statistics_and_plot(save_path='/Users/huangxiansheng/Desktop/retarget/error_logs/Stefanos_1os_antrikos_karsilamas_C3D_stageii_v3_error_stats.json')
-    
     if args.save_path is not None:
         # Prepare file paths for both versions
         base_path = args.save_path
@@ -187,20 +226,3 @@ if __name__ == "__main__":
         with open(save_path_v2, "wb") as f:
             pickle.dump(motion_data_v2, f)
         
-        print(f"\nSaved both versions of motion data:")
-        print(f"  Version 1 (simple, matching smplx_to_robot.py):")
-        print(f"    - Saved to: {save_path_v1}")
-        print(f"    - {num_frames} frames at {aligned_fps} fps")
-        print(f"    - root_pos shape: {root_pos.shape}")
-        print(f"    - root_rot shape: {root_rot.shape}")
-        print(f"    - dof_pos shape: {dof_pos.shape}")
-        print(f"    - local_body_pos: None")
-        print(f"    - link_body_list: None")
-        print(f"  Version 2 (with body_pos):")
-        print(f"    - Saved to: {save_path_v2}")
-        print(f"    - {num_frames} frames at {aligned_fps} fps")
-        print(f"    - body_pos shape: {body_pos.shape}")
-        print(f"    - body_rot shape: {body_rot.shape}")
-        print(f"    - {len(body_names)} body links")
-        
-        print("\nDone!")

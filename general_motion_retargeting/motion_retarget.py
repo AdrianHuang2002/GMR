@@ -23,6 +23,7 @@ class GeneralMotionRetargeting:
         verbose: bool=True,
         use_velocity_limit: bool=False,
         aligned_fps: float = None,
+        contact_filter: bool=False,
     ) -> None:
 
         # load the robot model
@@ -103,6 +104,8 @@ class GeneralMotionRetargeting:
         self.foot_contact_list = []
         self.robot_foot_last_pos = None
         self.dt = 1.0 / aligned_fps
+
+        self.contact_filter = contact_filter
 
         # Error tracking across frames (only final errors after IK iterations)
         self.all_final_errors_table1 = []
@@ -192,10 +195,10 @@ class GeneralMotionRetargeting:
         human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
         human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
         human_data = self.apply_ground_offset(human_data)
-        human_data = self.preprocess_contact_data(human_data)
+        if self.contact_filter:
+            human_data = self.preprocess_contact_data(human_data)
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
-        # (A) optional: contact fixes in original human frame
         
         self.scaled_human_data = human_data
         if self.use_ik_match_table1:
@@ -209,12 +212,9 @@ class GeneralMotionRetargeting:
                 task = self.human_body_to_task2[body_name]
                 pos, rot = human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
-        tracking_links_pos = self.get_human_tracking_targets()
-        return tracking_links_pos
 
     def retarget(self, human_data, offset_to_ground=False):
-        # Update the task targets
-        tracking_links_pos = self.update_targets(human_data, offset_to_ground)
+        self.update_targets(human_data, offset_to_ground)
 
         if self.use_ik_match_table1:
             # Solve the IK problem
@@ -264,12 +264,8 @@ class GeneralMotionRetargeting:
             # Store per-frame final error (after all iterations)
             self.all_final_errors_table2.append(next_error)
 
-        # Optional: contact post-process on robot side
-        qpos = self.configuration.data.qpos.copy()
-        # qpos = self.postprocess_robot_no_penetration()
         # self.debug_robot_feet(qpos)
-        # qpos = self.postprocess_robot_contact(qpos)
-        return qpos, tracking_links_pos
+        return self.configuration.data.qpos.copy()
     
     def calculate_error_statistics_and_plot(self, save_path=None):
         """Calculate final statistics for all collected errors and log them to a file."""
@@ -441,31 +437,6 @@ class GeneralMotionRetargeting:
             pos, quat = human_data[body_name]
             human_data[body_name][0] = pos - np.array([0, 0, self.ground_offset])
         return human_data
-    
-    def postprocess_robot_no_penetration(self):
-        """
-        Ensure no robot foot link is below ground.
-        Uses current configuration.data (assumed up-to-date after IK).
-        Does NOT modify internal state; returns a corrected qpos copy.
-        """
-        data = self.configuration.data   # mink's internal MjData
-        qpos = data.qpos.copy()          
-
-        left_id  = self.robot_body_names["left_toe_link"]
-        right_id = self.robot_body_names["right_toe_link"]
-
-        foot_pos = np.array(
-            [data.xpos[left_id], data.xpos[right_id]],
-            dtype=float,
-        )
-
-        ground_z = self.ground[2]  # or 0.0
-        min_z = foot_pos[:, 2].min()
-
-        # shift entire robot up so the lowest foot is exactly on the ground
-        qpos[2] += (ground_z - min_z)
-
-        return qpos
 
     def debug_robot_feet(self, qpos):
         """Check if feet are below ground for a given qpos."""
@@ -638,20 +609,3 @@ class GeneralMotionRetargeting:
 
         return p_torso_w, q_torso_w_wxyz
     
-    def get_raw_human_tracking_targets(self, human_data):
-        """
-        Build tracking targets directly from *raw* SMPL data,
-        with NO scaling / offsets / ground / contact tweaks.
-        human_data: dict[human_name] = (pos, quat) or [pos, quat]
-        """
-        # ensure numpy arrays + list->tuple consistency
-        human_data = self.to_numpy(human_data)
-        targets = {}
-        for human_name, robot_link in self.human_to_robot_tracking.items():
-            if human_name not in human_data:
-                continue
-            pos, quat = human_data[human_name]
-            # pos, quat are already np.ndarray from to_numpy
-            targets[robot_link] = (pos, quat)
-
-        return targets
