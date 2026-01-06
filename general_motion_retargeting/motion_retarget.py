@@ -104,6 +104,10 @@ class GeneralMotionRetargeting:
         self.robot_foot_last_pos = None
         self.dt = 1.0 / aligned_fps
 
+        # Error tracking across frames (only final errors after IK iterations)
+        self.all_final_errors_table1 = []
+        self.all_final_errors_table2 = []
+
         self.ik_limits = [mink.ConfigurationLimit(self.model)]
         if use_velocity_limit:
             VELOCITY_LIMITS = {k: 3*np.pi for k in self.robot_motor_names.keys()}
@@ -185,7 +189,6 @@ class GeneralMotionRetargeting:
     def update_targets(self, human_data, offset_to_ground=False):
         # scale human data in local frame
         human_data = self.to_numpy(human_data)
-        # tracking_links_pos = self.get_raw_human_tracking_targets(human_data)
         human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
         human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
         human_data = self.apply_ground_offset(human_data)
@@ -232,6 +235,9 @@ class GeneralMotionRetargeting:
                 self.configuration.integrate_inplace(vel1, dt)
                 next_error = self.error1()
                 num_iter += 1
+            
+            # Store per-frame final error (after all iterations)
+            self.all_final_errors_table1.append(next_error)
 
         if self.use_ik_match_table2:
             curr_error = self.error2()
@@ -254,6 +260,9 @@ class GeneralMotionRetargeting:
                 
                 next_error = self.error2()
                 num_iter += 1
+            
+            # Store per-frame final error (after all iterations)
+            self.all_final_errors_table2.append(next_error)
 
         # Optional: contact post-process on robot side
         qpos = self.configuration.data.qpos.copy()
@@ -261,6 +270,84 @@ class GeneralMotionRetargeting:
         # self.debug_robot_feet(qpos)
         # qpos = self.postprocess_robot_contact(qpos)
         return qpos, tracking_links_pos
+    
+    def calculate_error_statistics_and_plot(self, save_path=None):
+        """Calculate final statistics for all collected errors and log them to a file."""
+        import os
+        
+        all_stats = {}
+        
+        def calculate_stats(errors, name):
+            """Calculate statistics for a list of errors."""
+            if len(errors) == 0:
+                return None
+            
+            errors_arr = np.array(errors)
+            stats = {
+                'min': float(np.min(errors_arr)),
+                'max': float(np.max(errors_arr)),
+                'mean': float(np.mean(errors_arr)),
+                'std': float(np.std(errors_arr)),
+                'percentiles': {
+                    '25th': float(np.percentile(errors_arr, 25)),
+                    '50th': float(np.percentile(errors_arr, 50)),
+                    '75th': float(np.percentile(errors_arr, 75)),
+                    '90th': float(np.percentile(errors_arr, 90)),
+                    '95th': float(np.percentile(errors_arr, 95)),
+                    '99th': float(np.percentile(errors_arr, 99)),
+                }
+            }
+            print(f"\n[{name}] Final Statistics:")
+            print(f"  Min: {stats['min']:.6f}")
+            print(f"  Max: {stats['max']:.6f}")
+            print(f"  Mean: {stats['mean']:.6f}")
+            print(f"  Std: {stats['std']:.6f}")
+            print(f"  Percentiles:")
+            print(f"    25th: {stats['percentiles']['25th']:.6f}")
+            print(f"    50th: {stats['percentiles']['50th']:.6f}")
+            print(f"    75th: {stats['percentiles']['75th']:.6f}")
+            print(f"    90th: {stats['percentiles']['90th']:.6f}")
+            print(f"    95th: {stats['percentiles']['95th']:.6f}")
+            print(f"    99th: {stats['percentiles']['99th']:.6f}")
+            return stats
+        
+        # Calculate statistics for Table 1
+        if self.use_ik_match_table1:
+            if len(self.all_final_errors_table1) > 0:
+                stats = calculate_stats(self.all_final_errors_table1, "IK Table 1 - final_error")
+                if stats is not None:
+                    all_stats["IK Table 1 - final_error"] = stats
+        
+        # Calculate statistics for Table 2
+        if self.use_ik_match_table2:
+            if len(self.all_final_errors_table2) > 0:
+                stats = calculate_stats(self.all_final_errors_table2, "IK Table 2 - final_error")
+                if stats is not None:
+                    all_stats["IK Table 2 - final_error"] = stats
+        
+        # Log statistics to file
+        if save_path and len(all_stats) > 0:
+            # Prepare log file path
+            base_path = save_path
+            if base_path.endswith('.pkl'):
+                base_path = base_path[:-4]
+            log_path = base_path + '_error_stats.json'
+            
+            # Create directory if it doesn't exist
+            log_dir = os.path.dirname(log_path)
+            if log_dir:  # Only create directory if it's not empty
+                os.makedirs(log_dir, exist_ok=True)
+            
+            # Save as JSON
+            with open(log_path, 'w') as f:
+                json.dump(all_stats, f, indent=2)
+            
+            print(f"\n[Log] Statistics saved to: {log_path}")
+    
+    def reset_error_tracking(self):
+        """Reset all error tracking lists."""
+        self.all_final_errors_table1 = []
+        self.all_final_errors_table2 = []
 
     def error1(self):
         return np.linalg.norm(
@@ -450,8 +537,8 @@ class GeneralMotionRetargeting:
         ground_z = float(getattr(self, "ground", np.array([0.0, 0.0, 0.0]))[2])
 
         # pick support foot by confidence
-        support_idx = int(np.argmax(x))          
-        w_sup = float(x[support_idx])            
+        support_idx = int(np.argmax(x))
+        w_sup = float(x[support_idx])
         z_sup = float(foot_pos[support_idx, 2])  
 
         dz_support = w_sup * (ground_z - z_sup)

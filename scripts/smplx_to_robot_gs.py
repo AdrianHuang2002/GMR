@@ -132,10 +132,11 @@ if __name__ == "__main__":
             dof_pos=dof_pos,
         )
 
-        for link_name, (pos, quat) in tracking_links_pos.items():
-            pos_t = torch.tensor(pos, device=env.device, dtype=torch.float32)[None, :]
-            quat_t = torch.tensor(quat, device=env.device, dtype=torch.float32)[None, :]
-            env.scene.set_obj_pose(link_name, pos=pos_t, quat=quat_t)  # type: ignore
+        if tracking_links_pos is not None:
+            for link_name, (pos, quat) in tracking_links_pos.items():
+                pos_t = torch.tensor(pos, device=env.device, dtype=torch.float32)[None, :]
+                quat_t = torch.tensor(quat, device=env.device, dtype=torch.float32)[None, :]
+                env.scene.set_obj_pose(link_name, pos=pos_t, quat=quat_t)  # type: ignore
 
         env.scene.scene.step(refresh_visualizer=False)  # type: ignore
 
