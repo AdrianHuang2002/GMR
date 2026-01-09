@@ -8,7 +8,7 @@ import torch
 import numpy as np
 
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer  # unused but kept for now
+from general_motion_retargeting import RobotMotionViewer
 from general_motion_retargeting.utils.smpl import (
     load_smplx_file,
     get_smplx_data_offline_fast,
@@ -26,32 +26,12 @@ if __name__ == "__main__":
         "--smplx_file",
         help="SMPLX motion file to load.",
         type=str,
-        default=(
-            "/home/yanjieze/projects/g1_wbc/GMR/motion_data/ACCAD/"
-            "Male1General_c3d/General_A1_-_Stand_stageii.npz"
-        ),
     )
 
     parser.add_argument(
         "--robot",
         choices=[
             "unitree_g1",
-            "unitree_g1_with_hands",
-            "unitree_h1",
-            "unitree_h1_2",
-            "booster_t1",
-            "booster_t1_29dof",
-            "stanford_toddy",
-            "fourier_n1",
-            "engineai_pm01",
-            "kuavo_s45",
-            "hightorque_hi",
-            "galaxea_r1pro",
-            "berkeley_humanoid_lite",
-            "booster_k1",
-            "pnd_adam_lite",
-            "openloong",
-            "tienkung",
         ],
         default="unitree_g1",
     )
