@@ -90,14 +90,24 @@ if __name__ == "__main__":
     print("Retargeting motion...")
     qpos_list = []
     tracking_links_pos_list = []
+    foot_contact_list = []
     for smplx_frame_data in smplx_data_frames:  
         # retarget
         qpos = retarget.retarget(smplx_frame_data)
         # get tracking links positions
         tracking_links_pos = retarget.get_human_tracking_targets()
+        # get foot contact (stored as prev_x in preprocess_contact_data)
+        # prev_x contains the smoothed foot contact value x from line 504 of motion_retarget.py
+        foot_contact = getattr(retarget, "prev_x", None)
+        if foot_contact is not None:
+            foot_contact_list.append(np.asarray(foot_contact, dtype=np.float32).copy())
+        else:
+            # If contact_filter is disabled, create zero array with shape (2,)
+            foot_contact_list.append(np.zeros(2, dtype=np.float32))
         qpos_list.append(qpos)
         tracking_links_pos_list.append(tracking_links_pos)
     qpos_list = np.array(qpos_list)
+    foot_contact_array = np.array(foot_contact_list)  # Shape: (num_frames, 2)
     print(f"Retargeted {len(qpos_list)} frames")
     
 
@@ -173,34 +183,80 @@ if __name__ == "__main__":
     else:
         xy_offset = np.zeros(2, dtype=float)
 
-    pelvis_pos_list = []
-    pelvis_quat_list = []
-    tracking_links_pos_no_pelvis = []
-
+    # Apply xy_offset to all tracking links (including pelvis)
     for frame in tracking_links_pos_list:
-        pelvis_pos, pelvis_quat = frame["pelvis"]
-        pelvis_pos2 = np.asarray(pelvis_pos, dtype=float).copy()
-        pelvis_pos2[:2] -= xy_offset
-        pelvis_pos_list.append(pelvis_pos2)
-        pelvis_quat_list.append(np.asarray(pelvis_quat, dtype=float))
-
-        filtered = {}
         for k, (pos, quat) in frame.items():
-            if k == "pelvis":
-                continue
             pos2 = np.asarray(pos, dtype=float).copy()
             pos2[:2] -= xy_offset
-            filtered[k] = (pos2, quat)
-        tracking_links_pos_no_pelvis.append(filtered)
-
-    pelvis_pos_list = np.asarray(pelvis_pos_list)
-    pelvis_quat_list = np.asarray(pelvis_quat_list)
+            frame[k] = (pos2, quat)
     
+    # Desired order matching link_name_to_idx from convert_optitrack.py
+    # Robot link names (keys) in the order expected by convert_optitrack.py
+    # Values are OptiTrack names for reference
+    DESIRED_ORDER_MAP = {
+        "left_ankle_roll_link": "LeftFoot",
+        "right_ankle_roll_link": "RightFoot",
+        "left_wrist_yaw_link": "LeftHand",
+        "right_wrist_yaw_link": "RightHand",
+        "torso_link": "Spine1",
+        "pelvis": "Hips",
+    }
+    # Reverse mapping: OptiTrack name -> robot link name
+    REVERSE_MAP = {v: k for k, v in DESIRED_ORDER_MAP.items()}
+    # Ordered list of OptiTrack names (values) matching convert_optitrack.py link_name_to_idx order
+    DESIRED_ORDER = list(DESIRED_ORDER_MAP.values())
+    
+    # Collect all unique robot link names from all frames
+    all_link_names_set = set()
+    for frame in tracking_links_pos_list:
+        all_link_names_set.update(frame.keys())
+    
+    # Create ordered list of OptiTrack link names (values from DESIRED_ORDER_MAP)
+    link_names = []
+    for optitrack_name in DESIRED_ORDER:
+        robot_link_name = REVERSE_MAP[optitrack_name]
+        if robot_link_name in all_link_names_set:
+            link_names.append(optitrack_name)
+    
+    # Add any remaining robot link names not in DESIRED_ORDER_MAP (if any)
+    remaining_tracking_names = all_link_names_set - set(DESIRED_ORDER_MAP.keys())
+    for robot_link_name in sorted(remaining_tracking_names):
+        # Use robot link name as-is if not in the mapping
+        link_names.append(robot_link_name)
+    
+    num_links = len(link_names)
+    num_frames = len(tracking_links_pos_list)
+    
+    # Create arrays for pos and quat: (num_frames, num_links, 3/4)
+    pos_array = np.zeros((num_frames, num_links, 3), dtype=np.float32)
+    quat_array = np.zeros((num_frames, num_links, 4), dtype=np.float32)
+    frame_id_array = np.arange(num_frames, dtype=np.int32)
+    
+    # Fill in the data from tracking_links_pos_list
+    # link_names contains OptiTrack names, but we need robot link names to access the data
+    for frame_idx in range(num_frames):
+        frame_data = tracking_links_pos_list[frame_idx]
+        for link_idx, optitrack_name in enumerate(link_names):
+            # Map OptiTrack name back to robot link name to get the data
+            robot_link_name = REVERSE_MAP.get(optitrack_name, optitrack_name)
+            if robot_link_name in frame_data:
+                pos, quat = frame_data[robot_link_name]
+                pos_array[frame_idx, link_idx] = np.asarray(pos, dtype=np.float32)
+                quat_array[frame_idx, link_idx] = np.asarray(quat, dtype=np.float32)
+    
+    # Convert numpy arrays to torch Tensors
+    pos_tensor = torch.from_numpy(pos_array).to(dtype=torch.float32)
+    quat_tensor = torch.from_numpy(quat_array).to(dtype=torch.float32)
+    frame_id_tensor = torch.from_numpy(frame_id_array).to(dtype=torch.int32)
+    foot_contact_tensor = torch.from_numpy(foot_contact_array).to(dtype=torch.float32)
+
     motion_data_v2 = {
         "fps": aligned_fps,
-        "root_pos": pelvis_pos_list,  # Pelvis position as root (list of arrays)
-        "root_rot": pelvis_quat_list,  # Pelvis quaternion as root rotation (list of arrays)
-        "tracking_links_pos": tracking_links_pos_no_pelvis,  # All tracking links positions and rotations (without pelvis)
+        "link_names": tuple(link_names),  # Convert to tuple to match expected format
+        "pos": pos_tensor,  # Shape: (num_frames, num_links, 3)
+        "quat": quat_tensor,  # Shape: (num_frames, num_links, 4)
+        "frame_id": frame_id_tensor,  # Shape: (num_frames,)
+        "foot_contact": foot_contact_tensor,  # Shape: (num_frames, 2) - foot contact for left and right feet
     }
 
     if args.save_path is not None:

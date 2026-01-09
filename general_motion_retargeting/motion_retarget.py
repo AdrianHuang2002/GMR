@@ -136,12 +136,12 @@ class GeneralMotionRetargeting:
 
             # Left arm
             # "left_shoulder": "left_shoulder_roll_link",
-            "left_elbow": "left_elbow_link",
+            # "left_elbow": "left_elbow_link",
             "left_wrist": "left_wrist_yaw_link",
 
             # Right arm
             # "right_shoulder": "right_shoulder_roll_link",
-            "right_elbow": "right_elbow_link",
+            # "right_elbow": "right_elbow_link",
             "right_wrist": "right_wrist_yaw_link",
         }
 
@@ -563,11 +563,11 @@ class GeneralMotionRetargeting:
             se3 = task.transform_target_to_world
             pos = np.array(se3.translation())
             quat = np.array(se3.rotation().wxyz)
-            if robot_link == "right_ankle_roll_link":
+            if robot_link == "left_ankle_roll_link":
                 toe_id = self.robot_body_names["right_toe_link"]
                 pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
 
-            if robot_link == "left_ankle_roll_link":
+            if robot_link == "right_ankle_roll_link":
                 toe_id = self.robot_body_names["left_toe_link"]
                 pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
             

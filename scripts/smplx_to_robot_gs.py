@@ -169,7 +169,9 @@ if __name__ == "__main__":
             smplx_frame = smplx_data_frames[i]
 
             # Retarget
-            qpos, tracking_links_pos = retarget.retarget(smplx_frame)
+            qpos = retarget.retarget(smplx_frame)
+            # get tracking links positions
+            tracking_links_pos = retarget.get_human_tracking_targets()
 
             # Apply to env + markers
             step_env_with_qpos(qpos, tracking_links_pos)
