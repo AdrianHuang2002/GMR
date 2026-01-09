@@ -169,7 +169,8 @@ if __name__ == "__main__":
             smplx_frame = smplx_data_frames[i]
 
             # Retarget
-            qpos = retarget.retarget(smplx_frame)
+            retarget.update_targets(smplx_frame)
+            qpos = retarget.retarget()
             # get tracking links positions
             tracking_links_pos = retarget.get_human_tracking_targets()
 
