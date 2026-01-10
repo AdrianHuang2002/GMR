@@ -1,7 +1,7 @@
 # Genesis viewer
 export PYTHONPATH=$PYTHONPATH:/Users/huangxiansheng/Project
 python scripts/smplx_to_robot_gs.py \
-    --smplx_file /Users/huangxiansheng/Desktop/retarget/01_01_stageii.npz \
+    --smplx_file /Users/huangxiansheng/Desktop/retarget/Stefanos_1os_antrikos_karsilamas_C3D_stageii.npz \
     --loop 
     # --smplx_file /Users/huangxiansheng/Downloads/Stefanos_1os_antrikos_karsilamas_C3D_stageii.npz
 
@@ -12,9 +12,9 @@ mjpython scripts/benchmark_retarget.py \
 
 # Headless retargeting
 python scripts/smplx_to_robot_no_viewer.py \
-    --smplx_file /Users/huangxiansheng/Desktop/retarget/01_01_stageii.npz \
-    --contact_filter True \
-    --save_path /Users/huangxiansheng/Desktop/retarget/01_01_stageii
+    --smplx_file /Users/huangxiansheng/Desktop/retarget/16_34_stageii.npz \
+    --save_path /Users/huangxiansheng/Desktop/retarget/16_34_stageii \
+    --contact_filter True
 
 python scripts/vis_robot_motion_gs.py \
     --robot_motion_path /Users/huangxiansheng/Desktop/retarget/01_01_stageii_v1.pkl

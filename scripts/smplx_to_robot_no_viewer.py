@@ -41,14 +41,14 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--height_adjust",
-        default=True,
+        default=False,
         action="store_true",
         help="Adjust height to ensure lowest part is on the ground.",
     )
     
     parser.add_argument(
         "--root_origin_offset",
-        default=True,
+        default=False,
         action="store_true",
         help="Offset root position using the first frame.",
     )
@@ -91,19 +91,12 @@ if __name__ == "__main__":
     qpos_list = []
     tracking_links_pos_list = []
     foot_contact_list = []
-    for smplx_frame_data in smplx_data_frames:  
-        # retarget
-        qpos = retarget.retarget(smplx_frame_data)
-        # get tracking links positions
+    
+    for smplx_frame_data in smplx_data_frames:
+        retarget.update_targets(smplx_frame_data)
+        qpos = retarget.retarget()
         tracking_links_pos = retarget.get_human_tracking_targets()
-        # get foot contact (stored as prev_x in preprocess_contact_data)
-        # prev_x contains the smoothed foot contact value x from line 504 of motion_retarget.py
-        foot_contact = getattr(retarget, "prev_x", None)
-        if foot_contact is not None:
-            foot_contact_list.append(np.asarray(foot_contact, dtype=np.float32).copy())
-        else:
-            # If contact_filter is disabled, create zero array with shape (2,)
-            foot_contact_list.append(np.zeros(2, dtype=np.float32))
+        foot_contact_list.append(np.asarray(retarget.last_foot_contact, dtype=np.float32).copy())
         qpos_list.append(qpos)
         tracking_links_pos_list.append(tracking_links_pos)
     qpos_list = np.array(qpos_list)
@@ -156,8 +149,9 @@ if __name__ == "__main__":
         "root_pos": root_pos,
         "root_rot": root_rot,
         "dof_pos": dof_pos,
-        "local_body_pos": None,
-        "link_body_list": None,
+        "local_body_pos": local_body_pos.detach().cpu().numpy(),
+        "link_body_list": body_names,
+        "foot_contact": foot_contact_array,
     }
     
     # height adjust to ensure the lowerset part is on the ground
@@ -190,10 +184,8 @@ if __name__ == "__main__":
             pos2[:2] -= xy_offset
             frame[k] = (pos2, quat)
     
-    # Desired order matching link_name_to_idx from convert_optitrack.py
-    # Robot link names (keys) in the order expected by convert_optitrack.py
-    # Values are OptiTrack names for reference
-    DESIRED_ORDER_MAP = {
+    # Map robot link names to OptiTrack names
+    ROBOT_TO_OPTITRACK = {
         "left_ankle_roll_link": "LeftFoot",
         "right_ankle_roll_link": "RightFoot",
         "left_wrist_yaw_link": "LeftHand",
@@ -201,31 +193,28 @@ if __name__ == "__main__":
         "torso_link": "Spine1",
         "pelvis": "Hips",
     }
-    # Reverse mapping: OptiTrack name -> robot link name
-    REVERSE_MAP = {v: k for k, v in DESIRED_ORDER_MAP.items()}
-    # Ordered list of OptiTrack names (values) matching convert_optitrack.py link_name_to_idx order
-    DESIRED_ORDER = list(DESIRED_ORDER_MAP.values())
     
     # Collect all unique robot link names from all frames
-    all_link_names_set = set()
+    all_robot_link_names = set()
     for frame in tracking_links_pos_list:
-        all_link_names_set.update(frame.keys())
+        all_robot_link_names.update(frame.keys())
     
-    # Create ordered list of OptiTrack link names (values from DESIRED_ORDER_MAP)
+    # Build link_names list in the order of ROBOT_TO_OPTITRACK
     link_names = []
-    for optitrack_name in DESIRED_ORDER:
-        robot_link_name = REVERSE_MAP[optitrack_name]
-        if robot_link_name in all_link_names_set:
+    # Add links in the order defined by ROBOT_TO_OPTITRACK
+    for robot_link_name, optitrack_name in ROBOT_TO_OPTITRACK.items():
+        if robot_link_name in all_robot_link_names:
             link_names.append(optitrack_name)
     
-    # Add any remaining robot link names not in DESIRED_ORDER_MAP (if any)
-    remaining_tracking_names = all_link_names_set - set(DESIRED_ORDER_MAP.keys())
-    for robot_link_name in sorted(remaining_tracking_names):
-        # Use robot link name as-is if not in the mapping
+    # Add any remaining robot link names not in ROBOT_TO_OPTITRACK (keep as-is)
+    remaining_links = all_robot_link_names - set(ROBOT_TO_OPTITRACK.keys())
+    for robot_link_name in sorted(remaining_links):
         link_names.append(robot_link_name)
-    
     num_links = len(link_names)
     num_frames = len(tracking_links_pos_list)
+    
+    # Create reverse mapping for lookup
+    OPTITRACK_TO_ROBOT = {v: k for k, v in ROBOT_TO_OPTITRACK.items()}
     
     # Create arrays for pos and quat: (num_frames, num_links, 3/4)
     pos_array = np.zeros((num_frames, num_links, 3), dtype=np.float32)
@@ -237,8 +226,12 @@ if __name__ == "__main__":
     for frame_idx in range(num_frames):
         frame_data = tracking_links_pos_list[frame_idx]
         for link_idx, optitrack_name in enumerate(link_names):
-            # Map OptiTrack name back to robot link name to get the data
-            robot_link_name = REVERSE_MAP.get(optitrack_name, optitrack_name)
+            # Map OptiTrack name back to robot link name
+            if optitrack_name in OPTITRACK_TO_ROBOT:
+                robot_link_name = OPTITRACK_TO_ROBOT[optitrack_name]
+            else:
+                robot_link_name = optitrack_name
+            
             if robot_link_name in frame_data:
                 pos, quat = frame_data[robot_link_name]
                 pos_array[frame_idx, link_idx] = np.asarray(pos, dtype=np.float32)

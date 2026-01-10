@@ -1,4 +1,5 @@
 
+from xxlimited import foo
 import mink
 import mujoco as mj
 import numpy as np
@@ -195,8 +196,12 @@ class GeneralMotionRetargeting:
         human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
         human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
         human_data = self.apply_ground_offset(human_data)
+
         if self.contact_filter:
-            human_data = self.preprocess_contact_data(human_data)
+            human_data = self.foot_contact_filter(human_data)
+        else:
+            self.foot_contact_data(human_data)
+
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
         
@@ -460,8 +465,36 @@ class GeneralMotionRetargeting:
         # else:
         #     print(f"[OK] Feet above ground: L={left_z:.6f}, R={right_z:.6f}")
 
+    def foot_contact_data(self, human_data):
+        left_pos, left_quat = human_data["left_foot"]
+        right_pos, right_quat = human_data["right_foot"]
+
+        foot_pos = np.array([left_pos, right_pos], dtype=float)   # (2,3)
+        foot_quat = np.array([left_quat, right_quat], dtype=float)  # (2,4)
+
+        # --------- contact confidence ----------
+        foot_euler = np.array(
+            [quatToEuler(foot_quat[0]), quatToEuler(foot_quat[1])],
+            dtype=float,
+        )
+        foot_tilt = np.clip((np.abs(foot_euler[:, 0]) + np.abs(foot_euler[:, 1]) - 0.4) / 0.4, 0.0, 1.0)
+        foot_lift = np.clip((foot_pos[:, 2] - 0.15) / 0.15, 0.0, 1.0)
+
+        if self.foot_last_pos is None:
+            self.foot_last_pos = foot_pos.copy()
+
+        foot_vel = np.clip(
+            (np.linalg.norm((foot_pos[..., :2] - self.foot_last_pos[..., :2]) / self.dt, axis=-1) - 0.1) / 0.1,
+            0.0, 1.0,
+        )
+        self.foot_last_pos = foot_pos.copy()
+
+        foot_not_contact = ((foot_tilt + foot_lift + foot_vel) / 1.5).clip(0.0, 1.0)
+        foot_contact = 1.0 - foot_not_contact
+        
+        self.last_foot_contact = foot_contact
     
-    def preprocess_contact_data(self, human_data):
+    def foot_contact_filter(self, human_data):
         """
         Support-foot rule (global z-shift once per frame) + per-foot rotation flatten (local).
         - Choose support foot = argmax(contact weight x)
@@ -500,8 +533,8 @@ class GeneralMotionRetargeting:
         full  = 0.9
         x_raw = np.clip((foot_contact - enter) / (full - enter), 0.0, 1.0)
         alpha = 0.3
-        x = alpha * x_raw + (1 - alpha) * getattr(self, "prev_x", x_raw)
-        self.prev_x = x
+        x = alpha * x_raw + (1 - alpha) * getattr(self, "last_foot_contact", x_raw)
+        self.last_foot_contact = x
 
         # --------- Support-foot rule: compute ONE global z offset ----------
         ground_z = float(getattr(self, "ground", np.array([0.0, 0.0, 0.0]))[2])
@@ -563,11 +596,11 @@ class GeneralMotionRetargeting:
             pos = np.array(se3.translation())
             quat = np.array(se3.rotation().wxyz)
             if robot_link == "left_ankle_roll_link":
-                toe_id = self.robot_body_names["right_toe_link"]
+                toe_id = self.robot_body_names["left_toe_link"]
                 pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
 
             if robot_link == "right_ankle_roll_link":
-                toe_id = self.robot_body_names["left_toe_link"]
+                toe_id = self.robot_body_names["right_toe_link"]
                 pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
             
             if robot_link == "torso_link":
