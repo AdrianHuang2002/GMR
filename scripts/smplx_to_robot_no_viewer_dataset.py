@@ -98,7 +98,7 @@ def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_fo
 
     log_memory("After retargeting")
     
-    device = "cpu"
+    device = "cuda:0"
     kinematics_model = KinematicsModel(retarget.xml_file, device=device)
 
     try:
@@ -375,16 +375,27 @@ def main():
     print("full args_list:", len(args_list))
     
     # remove hard and infeasible motions
-    exclude_file_content = ["BMLrub", "EKUT", "crawl", "_lie", "upstairs", "downstairs"]
-    hard_motions_lower = {m.lower() for m in hard_motions}
-    exclude_lower = [c.lower() for c in exclude_file_content]
+    hard_motions = {m for m in hard_motions}
+    exclude_dirs = {"BMLrub", "EKUT"}
+    exclude_keywords = ["crawl", "_lie", "upstairs", "downstairs"]
     new_args_list = []
+    src_root = pathlib.Path(src_folder)
+
     for arguments in args_list:
-        motion_name = arguments[0].split("/")[-1].split('.')[0]
-        motion_lower = motion_name.lower()
-        if motion_lower in hard_motions_lower:
+        smplx_file_path = arguments[0]
+        motion_name = pathlib.Path(smplx_file_path).stem
+        # parts relative to src_folder, e.g. ("CMU", "133", "133_14_stageii.npz")
+        rel_parts = pathlib.Path(smplx_file_path).relative_to(src_root).parts
+        top_dir = rel_parts[0] if rel_parts else ""
+        rel_parts_str = "_".join(rel_parts).rsplit(".", 1)[0]
+        # 1) Filter hard motions (exact filename match, no path, no ext)
+        if rel_parts_str in hard_motions:
             continue
-        if any(content in motion_lower for content in exclude_file_content):
+        # 2) Filter exclude directories (dir name match)
+        if top_dir in exclude_dirs:
+            continue
+        # 3) Filter other exclude keywords in filename
+        if any(k in motion_name.lower() for k in exclude_keywords):
             continue
         new_args_list.append(arguments)
     args_list = new_args_list
