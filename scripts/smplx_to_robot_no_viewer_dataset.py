@@ -31,7 +31,7 @@ def check_memory(threshold_gb=3):  # adjust based on your available memory
 HERE = pathlib.Path(__file__).parent
 
 
-def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_folder, total_files, 
+def process_file(smplx_file_path, tgt_file_path_after, tgt_file_path_before, tgt_robot, SMPLX_FOLDER, tgt_folder_after, total_files, 
                  height_adjust=False, root_origin_offset=False, contact_filter=False, verbose=False):
     def log_memory(message):
         if verbose:
@@ -98,7 +98,7 @@ def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_fo
 
     log_memory("After retargeting")
     
-    device = "cuda:0"
+    device = "cpu"
     kinematics_model = KinematicsModel(retarget.xml_file, device=device)
 
     try:
@@ -248,29 +248,30 @@ def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_fo
         "foot_contact": foot_contact_tensor,  # Shape: (num_frames, 2) - foot contact for left and right feet
     }
 
-    # Prepare file paths for both versions
-    base_path = tgt_file_path
-    if base_path.endswith('.pkl'):
-        base_path = base_path[:-4]  # Remove .pkl extension
+    # Prepare file paths for both versions in separate target directories
+    # v1 (after retarget) goes to tgt_folder_after
+    # v2 (before retarget) goes to tgt_folder_before
+    dir_after = os.path.dirname(tgt_file_path_after)
+    dir_before = os.path.dirname(tgt_file_path_before)
+    if dir_after:
+        os.makedirs(dir_after, exist_ok=True)
+    if dir_before:
+        os.makedirs(dir_before, exist_ok=True)
     
-    save_path_v1 = base_path + '_v1.pkl'
-    save_path_v2 = base_path + '_v2.pkl'
-    
-    os.makedirs(os.path.dirname(save_path_v1), exist_ok=True)
-    
-    # Save version 1
-    with open(save_path_v1, "wb") as f:
+    # Save version 1 (after retarget) - robot motion format
+    with open(tgt_file_path_after, "wb") as f:
         pickle.dump(motion_data_v1, f)
     
-    # Save version 2
-    with open(save_path_v2, "wb") as f:
+    # Save version 2 (before retarget) - tracking links format
+    with open(tgt_file_path_before, "wb") as f:
         pickle.dump(motion_data_v2, f)
         
-    # Progress print based on tgt_folder
+    # Progress print based on tgt_folder_after (count files in after directory)
     done = 0
-    for root, _, files in os.walk(tgt_folder):
-        done += len([f for f in files if f.endswith('_v1.pkl')])  # Count v1 files
-    print(f"Processed {done}/{total_files}: {save_path_v1}")
+    if os.path.exists(tgt_folder_after):
+        for root, _, files in os.walk(tgt_folder_after):
+            done += len([f for f in files if f.endswith('.pkl')])
+    print(f"Processed {done}/{total_files}: {tgt_file_path_after}")
     
     if verbose:
         # Get memory snapshot
@@ -298,12 +299,24 @@ def main():
                 "pnd_adam_lite", "openloong", "tienkung"],
         default="unitree_g1",
     )
-    parser.add_argument("--src_folder", type=str,
-                        required=True,
-                        )
-    parser.add_argument("--tgt_folder", type=str,
-                        required=True,
-                        )
+    parser.add_argument(
+        "--src_folder", 
+        type=str,
+        required=True,
+        help="Source folder containing SMPLX motion files (.pkl or .npz).",
+    )
+    parser.add_argument(
+        "--tgt_folder_after", 
+        type=str,
+        required=True,
+        help="Target folder for v1 format files (after retarget - robot motion with root_pos, root_rot, dof_pos).",
+    )
+    parser.add_argument(
+        "--tgt_folder_before", 
+        type=str,
+        required=True,
+        help="Target folder for v2 format files (before retarget - tracking links with OptiTrack names).",
+    )
     
     parser.add_argument(
         "--height_adjust",
@@ -322,12 +335,22 @@ def main():
     parser.add_argument(
         "--contact_filter",
         default=False,
+        action="store_true",
         help="Filter contacts to ensure the robot feet on ground.",
-        type=bool,
     )
     
-    parser.add_argument("--override", default=False, action="store_true")
-    parser.add_argument("--num_cpus", default=4, type=int)
+    parser.add_argument(
+        "--override", 
+        default=False, 
+        action="store_true",
+        help="Override existing files if they already exist.",
+    )
+    parser.add_argument(
+        "--num_cpus", 
+        default=4, 
+        type=int,
+        help="Number of CPU cores to use for parallel processing.",
+    )
     args = parser.parse_args()
     
     # print the total number of cpus and gpus
@@ -335,7 +358,8 @@ def main():
     print(f"Using {args.num_cpus} CPUs.")
     
     src_folder = args.src_folder
-    tgt_folder = args.tgt_folder
+    tgt_folder_after = args.tgt_folder_after
+    tgt_folder_before = args.tgt_folder_before
 
     SMPLX_FOLDER = HERE / ".." / "assets" / "body_models"
     hard_motions_folder = HERE / ".." / "assets" / "hard_motions"
@@ -364,14 +388,24 @@ def main():
                 continue
             if filename.endswith((".pkl", ".npz")):
                 smplx_file_path = os.path.join(dirpath, filename)
-                tgt_file_path = smplx_file_path.replace(src_folder, tgt_folder).replace(".npz", ".pkl")
-                # Check if both v1 and v2 exist
-                base_path = tgt_file_path[:-4] if tgt_file_path.endswith('.pkl') else tgt_file_path
-                save_path_v1 = base_path + '_v1.pkl'
-                save_path_v2 = base_path + '_v2.pkl'
-                if (not os.path.exists(save_path_v1) or not os.path.exists(save_path_v2) or args.override):
-                    args_list.append((smplx_file_path, tgt_file_path, args.robot, SMPLX_FOLDER, tgt_folder,
-                                    args.height_adjust, args.root_origin_offset, args.contact_filter))
+                # Create target paths in both directories, preserving relative structure
+                rel_path = os.path.relpath(smplx_file_path, src_folder)
+                tgt_file_path_after = os.path.join(tgt_folder_after, rel_path).replace(".npz", ".pkl")
+                tgt_file_path_before = os.path.join(tgt_folder_before, rel_path).replace(".npz", ".pkl")
+                
+                # Check if both files exist
+                if (not os.path.exists(tgt_file_path_after) or not os.path.exists(tgt_file_path_before) or args.override):
+                    args_list.append((
+                        smplx_file_path, 
+                        tgt_file_path_after, 
+                        tgt_file_path_before, 
+                        args.robot, 
+                        SMPLX_FOLDER, 
+                        tgt_folder_after,
+                        args.height_adjust, 
+                        args.root_origin_offset, 
+                        args.contact_filter
+                    ))
     print("full args_list:", len(args_list))
     
     # remove hard and infeasible motions
@@ -408,7 +442,8 @@ def main():
     with mp.Pool(args.num_cpus) as pool:
         pool.starmap(process_file, [args + (total_files, verbose) for args in args_list])
 
-    print("Done. Saved to ", tgt_folder)
+    print(f"Done. Saved v1 (after retarget) to: {tgt_folder_after}")
+    print(f"Done. Saved v2 (before retarget) to: {tgt_folder_before}")
 
 
 if __name__ == "__main__":
