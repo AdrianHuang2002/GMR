@@ -201,8 +201,7 @@ class GeneralMotionRetargeting:
 
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
-        
-        import ipdb; ipdb.set_trace()
+
         self.scaled_human_data = human_data
 
     def retarget(self):
