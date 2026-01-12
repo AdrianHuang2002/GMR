@@ -186,7 +186,23 @@ class GeneralMotionRetargeting:
                 self.tasks2.append(task)
                 self.task_errors2[task] = []
 
-  
+    def process_human_data(self, human_data, offset_to_ground=False):
+        # scale human data in local frame
+        human_data = self.to_numpy(human_data)
+        human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
+        human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
+        human_data = self.apply_ground_offset(human_data)
+
+        if self.contact_filter:
+            human_data = self.foot_contact_filter(human_data)
+        else:
+            self.foot_contact_data(human_data)
+
+        if offset_to_ground:
+            human_data = self.offset_human_data_to_ground(human_data)
+
+        return human_data
+
     def update_targets(self, human_data, offset_to_ground=False):
         # scale human data in local frame
         human_data = self.to_numpy(human_data)
@@ -204,18 +220,18 @@ class GeneralMotionRetargeting:
 
         self.scaled_human_data = human_data
 
-    def retarget(self):
+    def retarget(self, scaled_human_data):
 
         if self.use_ik_match_table1:
             for body_name in self.human_body_to_task1.keys():
                 task = self.human_body_to_task1[body_name]
-                pos, rot = self.scaled_human_data[body_name]
+                pos, rot = scaled_human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
         
         if self.use_ik_match_table2:
             for body_name in self.human_body_to_task2.keys():
                 task = self.human_body_to_task2[body_name]
-                pos, rot = self.scaled_human_data[body_name]
+                pos, rot = scaled_human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
 
         if self.use_ik_match_table1:
@@ -361,14 +377,13 @@ class GeneralMotionRetargeting:
             )
         )
 
-
     def to_numpy(self, human_data):
         for body_name in human_data.keys():
             human_data[body_name] = [np.asarray(human_data[body_name][0]), np.asarray(human_data[body_name][1])]
         return human_data
 
-
-    def scale_human_data(self, human_data, human_root_name, human_scale_table):
+    @staticmethod
+    def scale_human_data(human_data, human_root_name, human_scale_table):
         
         human_data_local = {}
         root_pos, root_quat = human_data[human_root_name]
@@ -392,8 +407,9 @@ class GeneralMotionRetargeting:
             human_data_global[body_name] = (human_data_local[body_name] + scaled_root_pos, human_data[body_name][1])
 
         return human_data_global
-    
-    def offset_human_data(self, human_data, pos_offsets, rot_offsets):
+
+    @staticmethod
+    def offset_human_data(human_data, pos_offsets, rot_offsets):
         """the pos offsets are applied in the local frame"""
         offset_human_data = {}
         for body_name in human_data.keys():
@@ -410,8 +426,9 @@ class GeneralMotionRetargeting:
             offset_human_data[body_name][0] = pos + global_pos_offset
            
         return offset_human_data
-            
-    def offset_human_data_to_ground(self, human_data):
+
+    @staticmethod
+    def offset_human_data_to_ground(human_data):
         """find the lowest point of the human data and offset the human data to the ground"""
         offset_human_data = {}
         ground_offset = 0.0
@@ -439,29 +456,6 @@ class GeneralMotionRetargeting:
             pos, quat = human_data[body_name]
             human_data[body_name][0] = pos - np.array([0, 0, self.ground_offset])
         return human_data
-
-    def debug_robot_feet(self, qpos):
-        """Check if feet are below ground for a given qpos."""
-        # Build a fresh MjData and run FK with this qpos
-        data = mj.MjData(self.model)
-        data.qpos[:] = qpos
-        mj.mj_forward(self.model, data)
-
-        # Use BODY IDs, not DOF IDs
-        left_id  = self.robot_body_names["left_toe_link"]   # or "left_ankle_roll_link"
-        right_id = self.robot_body_names["right_toe_link"]  # or "right_ankle_roll_link"
-
-        left_z  = data.xpos[left_id][2]
-        right_z = data.xpos[right_id][2]
-        ground_z = self.ground[2]  # usually 0.0
-
-        if left_z < ground_z or right_z < ground_z:
-            print("[WARNING] Robot foot penetration detected!")
-            print(f"  left_z  = {left_z:.6f}")
-            print(f"  right_z = {right_z:.6f}")
-            print(f"  ground  = {ground_z:.6f}")
-        # else:
-        #     print(f"[OK] Feet above ground: L={left_z:.6f}, R={right_z:.6f}")
 
     def foot_contact_data(self, human_data):
         left_pos, left_quat = human_data["left_foot"]
@@ -580,62 +574,3 @@ class GeneralMotionRetargeting:
         human_data["right_foot"] = (pos, q_out)
 
         return human_data
-    
-    def get_human_tracking_targets(self):
-        """Use the IK task SE3 target directly for visualization."""
-        targets = {}
-
-        for human_name, task in self.human_body_to_task1.items():
-            robot_link = self.human_to_robot_tracking.get(human_name, None)
-            if robot_link is None:
-                continue
-            
-            se3 = task.transform_target_to_world
-            pos = np.array(se3.translation())
-            quat = np.array(se3.rotation().wxyz)
-            if robot_link == "left_ankle_roll_link":
-                toe_id = self.robot_body_names["left_toe_link"]
-                pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
-
-            if robot_link == "right_ankle_roll_link":
-                toe_id = self.robot_body_names["right_toe_link"]
-                pos, quat = self.convert_child_to_parent_target(toe_id, pos, quat)
-            
-            if robot_link == "torso_link":
-                p_pelvis_w = self.human_body_to_task1["pelvis"].transform_target_to_world.translation()
-                q_torso_w_wxyz = quat
-                pos, quat = self.pelvis_to_torso_manual(p_pelvis_w, q_torso_w_wxyz)
-                
-            targets[robot_link] = (pos, quat)
-
-        return targets
-    
-    def convert_child_to_parent_target(self, child_id, p_child_w, q_child_w_wxyz):
-        # child pose relative to its parent (from MuJoCo model)
-        p_child_in_parent = self.model.body_pos[child_id].copy()     # xyz in parent frame
-        q_child_in_parent = self.model.body_quat[child_id].copy()    # wxyz in parent frame
-
-        # rotations
-        R_child_w = R.from_quat(q_child_w_wxyz, scalar_first=True)
-        R_child_parent = R.from_quat(q_child_in_parent, scalar_first=True)
-
-        R_parent_w = R_child_w * R_child_parent.inv()
-
-        p_parent_w = p_child_w - R_parent_w.apply(p_child_in_parent)
-        q_parent_w = R_parent_w.as_quat(scalar_first=True)
-
-        return p_parent_w, q_parent_w
-    
-    def pelvis_to_torso_manual(self, p_pelvis_w, q_torso_w_wxyz):
-        """
-        Compute torso world position from pelvis world position.
-        Torso orientation is assumed to be already known.
-        """
-        # fixed offset from pelvis frame (XML)
-        p_offset = np.array([-0.0039635, 0.0, 0.044], dtype=float)
-
-        R_pelvis = R.from_quat(q_torso_w_wxyz, scalar_first=True)
-        p_torso_w = p_pelvis_w + R_pelvis.apply(p_offset)
-
-        return p_torso_w, q_torso_w_wxyz
-    

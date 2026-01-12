@@ -2,10 +2,10 @@ import argparse
 import pathlib
 import os
 import time
-import platform
 
 import torch
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
 from general_motion_retargeting import RobotMotionViewer
@@ -16,6 +16,15 @@ from general_motion_retargeting.utils.smpl import (
 from gs_env.sim.envs.config.registry import EnvArgsRegistry
 import gs_env.sim.envs as envs
 
+
+HUMAN_TO_ROBOT_TRACKING_DICT = {
+    "pelvis": "pelvis",
+    "spine3": "torso_link",
+    "left_foot": "left_ankle_roll_link",
+    "right_foot": "right_ankle_roll_link",
+    "left_wrist": "left_wrist_yaw_link",
+    "right_wrist": "right_wrist_yaw_link",
+}
 
 if __name__ == "__main__":
 
@@ -43,10 +52,10 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--loop",
+        "--view",
         default=False,
         action="store_true",
-        help="Loop the motion.",
+        help="View the motion.",
     )
 
 
@@ -68,18 +77,19 @@ if __name__ == "__main__":
         smplx_data, body_model, smplx_output, tgt_fps=tgt_fps
     )
 
-    env_args = EnvArgsRegistry["g1_motion"]
-    tracking_link_names = getattr(env_args, "tracking_link_names", [])
+    if args.view:
+        env_args = EnvArgsRegistry["g1_motion"]
+        tracking_link_names = getattr(env_args, "tracking_link_names", [])
 
-    envclass = getattr(envs, env_args.env_name)
-    env = envclass(
-        args=env_args,
-        num_envs=1,
-        show_viewer=show_viewer,
-        device=torch.device(device),
-        eval_mode=True,
-    )
-    env.reset()
+        envclass = getattr(envs, env_args.env_name)
+        env = envclass(
+            args=env_args,
+            num_envs=1,
+            show_viewer=show_viewer,
+            device=torch.device(device),
+            eval_mode=True,
+        )
+        env.reset()
 
     # Initialize the retargeting system
     retarget = GMR(
@@ -95,31 +105,6 @@ if __name__ == "__main__":
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
 
-    def step_env_with_qpos(qpos, tracking_links_pos):
-        """
-        qpos: [root_pos(3), root_quat(4 wxyz), dof_pos(...)]
-        tracking_links_pos: dict[link_name] = (pos(3,), quat(4,))
-        """
-        qpos_t = torch.tensor(qpos, device=env.device, dtype=torch.float32)
-
-        root_pos = qpos_t[0:3]
-        root_quat = qpos_t[3:7]
-        dof_pos = qpos_t[7:]
-
-        env.robot.set_state(
-            pos=root_pos,
-            quat=root_quat,
-            dof_pos=dof_pos,
-        )
-
-        if tracking_links_pos is not None:
-            for link_name, (pos, quat) in tracking_links_pos.items():
-                pos_t = torch.tensor(pos, device=env.device, dtype=torch.float32)[None, :]
-                quat_t = torch.tensor(quat, device=env.device, dtype=torch.float32)[None, :]
-                env.scene.set_obj_pose(link_name, pos=pos_t, quat=quat_t)  # type: ignore
-
-        env.scene.scene.step(refresh_visualizer=False)  # type: ignore
-
     def motion_loop():
         fps_counter = 0
         fps_start_time = time.time()
@@ -129,7 +114,7 @@ if __name__ == "__main__":
 
         while True:
             # Advance frame index
-            if args.loop:
+            if args.view:
                 i = (i + 1) % len(smplx_data_frames)
             else:
                 i += 1
@@ -149,25 +134,42 @@ if __name__ == "__main__":
             smplx_frame = smplx_data_frames[i]
 
             # Retarget
-            retarget.update_targets(smplx_frame)
-            qpos = retarget.retarget()
-            # get tracking links positions
-            tracking_links_pos = retarget.get_human_tracking_targets()
+            scaled_human_data = retarget.process_human_data(smplx_frame)
+            qpos = retarget.retarget(scaled_human_data)
+            qpos_t = torch.tensor(qpos, device=env.device, dtype=torch.float32)
+            tracking_links_pos = {}
 
-            # Apply to env + markers
-            step_env_with_qpos(qpos, tracking_links_pos)
+            for human_name, robot_name in HUMAN_TO_ROBOT_TRACKING_DICT.items():
+                if human_name in scaled_human_data.keys():
+                    pos, quat = scaled_human_data[human_name]
+                    pos_t = torch.tensor(pos, device=env.device, dtype=torch.float32)
+                    quat_t = torch.tensor(quat, device=env.device, dtype=torch.float32)
+                    if "ankle" in robot_name:
+                        offset = torch.tensor([-0.1, 0, 0.02], device=env.device, dtype=torch.float32)
+                        pos_t += R.from_quat(quat_t, scalar_first=True).apply(offset)
+                    if "torso" in robot_name:
+                        offset = np.array([-0.0039635, 0.0, 0.044], dtype=float)
+                        pos_t = torch.tensor(scaled_human_data["pelvis"][0]) + R.from_quat(quat_t, scalar_first=True).apply(offset)
+                    tracking_links_pos[robot_name] = (pos_t, quat_t)
+
+            if args.view:
+                env.robot.set_state(
+                    pos=qpos_t[:3],
+                    quat=qpos_t[3:7],
+                    dof_pos=qpos_t[7:],
+                )
+
+                if tracking_links_pos is not None:
+                    for link_name, (pos, quat) in tracking_links_pos.items():
+                        env.scene.set_obj_pose(link_name, pos=pos[None, :], quat=quat[None, :])  # type: ignore
+
+                env.scene.scene.step()
 
             # Save qpos if requested
             if args.save_path is not None:
                 qpos_list.append(qpos.copy())
 
-    if platform.system() == "Darwin" and show_viewer:
-        import threading
-
-        threading.Thread(target=motion_loop, daemon=True).start()
-        env.scene.scene.viewer.run()  # type: ignore
-    else:
-        motion_loop()
+    motion_loop()
 
     # Save motion to pickle if requested
     if args.save_path is not None and len(qpos_list) > 0:
