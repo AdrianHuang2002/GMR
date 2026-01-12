@@ -18,12 +18,12 @@ class GeneralMotionRetargeting:
         self,
         src_human: str,
         tgt_robot: str,
-        actual_human_height: float = None,
+        actual_human_height: float = 1.7,
         solver: str="daqp", # change from "quadprog" to "daqp".
         damping: float=5e-1, # change from 1e-1 to 1e-2.
         verbose: bool=True,
         use_velocity_limit: bool=False,
-        aligned_fps: float = None,
+        aligned_fps: float = 30,
         contact_filter: bool=False,
     ) -> None:
 
@@ -66,10 +66,7 @@ class GeneralMotionRetargeting:
             print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
         
         # compute the scale ratio based on given human height and the assumption in the IK config
-        if actual_human_height is not None:
-            ratio = actual_human_height / ik_config["human_height_assumption"]
-        else:
-            ratio = 1.0
+        ratio = actual_human_height / ik_config["human_height_assumption"]
             
         # adjust the human scale table
         for key in ik_config["human_scale_table"].keys():
@@ -116,9 +113,9 @@ class GeneralMotionRetargeting:
         if use_velocity_limit:
             VELOCITY_LIMITS = {k: 3*np.pi for k in self.robot_motor_names.keys()}
             self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS)) 
-            
+
         self.setup_retarget_configuration()
-        
+
         self.ground_offset = 0.0
         self.human_to_robot_tracking = {
             # Core body
@@ -205,20 +202,22 @@ class GeneralMotionRetargeting:
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
         
+        import ipdb; ipdb.set_trace()
         self.scaled_human_data = human_data
+
+    def retarget(self):
+
         if self.use_ik_match_table1:
             for body_name in self.human_body_to_task1.keys():
                 task = self.human_body_to_task1[body_name]
-                pos, rot = human_data[body_name]
+                pos, rot = self.scaled_human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
         
         if self.use_ik_match_table2:
             for body_name in self.human_body_to_task2.keys():
                 task = self.human_body_to_task2[body_name]
-                pos, rot = human_data[body_name]
+                pos, rot = self.scaled_human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
-
-    def retarget(self):
 
         if self.use_ik_match_table1:
             # Solve the IK problem
