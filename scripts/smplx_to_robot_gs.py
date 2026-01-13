@@ -69,26 +69,25 @@ if __name__ == "__main__":
 
     # Align fps
     tgt_fps = 30
-    show_viewer = True
+    show_viewer = args.view
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     smplx_data_frames, aligned_fps = get_smplx_data_offline_fast(
         smplx_data, body_model, smplx_output, tgt_fps=tgt_fps
     )
 
-    if args.view:
-        env_args = EnvArgsRegistry["g1_motion"]
-        tracking_link_names = getattr(env_args, "tracking_link_names", [])
+    env_args = EnvArgsRegistry["g1_motion"]
+    tracking_link_names = getattr(env_args, "tracking_link_names", [])
 
-        envclass = getattr(envs, env_args.env_name)
-        env = envclass(
-            args=env_args,
-            num_envs=1,
-            show_viewer=show_viewer,
-            device=torch.device(device),
-            eval_mode=True,
-        )
-        env.reset()
+    envclass = getattr(envs, env_args.env_name)
+    env = envclass(
+        args=env_args,
+        num_envs=1,
+        show_viewer=show_viewer,
+        device=torch.device(device),
+        eval_mode=True,
+    )
+    env.reset()
 
     # Initialize the retargeting system
     retarget = GMR(
@@ -99,6 +98,7 @@ if __name__ == "__main__":
     )
 
     qpos_list = []
+    tracking_links_pos_list = []
     if args.save_path is not None:
         save_dir = os.path.dirname(args.save_path)
         if save_dir:
@@ -167,6 +167,7 @@ if __name__ == "__main__":
             # Save qpos if requested
             if args.save_path is not None:
                 qpos_list.append(qpos.copy())
+                tracking_links_pos_list.append(tracking_links_pos.copy())
 
     motion_loop()
 
@@ -186,6 +187,7 @@ if __name__ == "__main__":
             "root_pos": root_pos,
             "root_rot": root_rot,
             "dof_pos": dof_pos,
+            "tracking_links_pos": tracking_links_pos_list,
             "local_body_pos": local_body_pos,
             "link_body_list": body_names,
         }
