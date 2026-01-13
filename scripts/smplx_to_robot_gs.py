@@ -79,16 +79,15 @@ if __name__ == "__main__":
     env_args = EnvArgsRegistry["g1_motion"]
     tracking_link_names = getattr(env_args, "tracking_link_names", [])
 
-    if args.view:
-        envclass = getattr(envs, env_args.env_name)
-        env = envclass(
-            args=env_args,
-            num_envs=1,
-            show_viewer=show_viewer,
-            device=torch.device(device),
-            eval_mode=True,
-        )
-        env.reset()
+    envclass = getattr(envs, env_args.env_name)
+    env = envclass(
+        args=env_args,
+        num_envs=1,
+        show_viewer=show_viewer,
+        device=torch.device(device),
+        eval_mode=True,
+    )
+    env.reset()
 
     # Initialize the retargeting system
     retarget = GMR(
@@ -136,16 +135,16 @@ if __name__ == "__main__":
             # Retarget
             scaled_human_data = retarget.process_human_data(smplx_frame)
             qpos = retarget.retarget(scaled_human_data)
-            qpos_t = torch.tensor(qpos, device=device, dtype=torch.float32)
+            qpos_t = torch.tensor(qpos, device=env.device, dtype=torch.float32)
             tracking_links_pos = {}
 
             for human_name, robot_name in HUMAN_TO_ROBOT_TRACKING_DICT.items():
                 if human_name in scaled_human_data.keys():
                     pos, quat = scaled_human_data[human_name]
-                    pos_t = torch.tensor(pos, device=device, dtype=torch.float32)
-                    quat_t = torch.tensor(quat, device=device, dtype=torch.float32)
+                    pos_t = torch.tensor(pos, device=env.device, dtype=torch.float32)
+                    quat_t = torch.tensor(quat, device=env.device, dtype=torch.float32)
                     if "ankle" in robot_name:
-                        offset = torch.tensor([-0.1, 0, 0.02], device=device, dtype=torch.float32)
+                        offset = torch.tensor([-0.1, 0, 0.02], device=env.device, dtype=torch.float32)
                         pos_t += R.from_quat(quat_t, scalar_first=True).apply(offset)
                     if "torso" in robot_name:
                         offset = np.array([-0.0039635, 0.0, 0.044], dtype=float)
