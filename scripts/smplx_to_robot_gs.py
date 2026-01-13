@@ -8,7 +8,6 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
-from general_motion_retargeting import RobotMotionViewer
 from general_motion_retargeting.utils.smpl import (
     load_smplx_file,
     get_smplx_data_offline_fast,

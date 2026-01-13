@@ -1,12 +1,10 @@
 
-from xxlimited import foo
 import mink
 import mujoco as mj
 import numpy as np
 import json
 import torch
 from scipy.spatial.transform import Rotation as R
-from scipy.signal import butter, sosfilt, sosfilt_zi
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from rich import print
 from .rot_utils import quatToEuler, flatten_quat_keep_yaw, slerp
@@ -41,8 +39,7 @@ class GeneralMotionRetargeting:
             self.robot_dof_names[dof_name] = i
             if verbose:
                 print(f"DoF {i}: {dof_name}")
-            
-            
+
         print("[GMR] Robot Body names and their IDs:")
         self.robot_body_names = {}
         for i in range(self.model.nbody):  # 'nbody' is the number of bodies
@@ -50,7 +47,7 @@ class GeneralMotionRetargeting:
             self.robot_body_names[body_name] = i
             if verbose:
                 print(f"Body ID {i}: {body_name}")
-        
+
         print("[GMR] Robot Motor (Actuator) names and their IDs:")
         self.robot_motor_names = {}
         for i in range(self.model.nu):  # 'nu' is the number of actuators (motors)
@@ -64,14 +61,13 @@ class GeneralMotionRetargeting:
             ik_config = json.load(f)
         if verbose:
             print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
-        
+
         # compute the scale ratio based on given human height and the assumption in the IK config
         ratio = actual_human_height / ik_config["human_height_assumption"]
-            
+
         # adjust the human scale table
         for key in ik_config["human_scale_table"].keys():
             ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
-    
 
         # used for retargeting
         self.ik_match_table1 = ik_config["ik_match_table1"]
@@ -117,39 +113,13 @@ class GeneralMotionRetargeting:
         self.setup_retarget_configuration()
 
         self.ground_offset = 0.0
-        self.human_to_robot_tracking = {
-            # Core body
-            "pelvis": "pelvis",
-            "spine3": "torso_link",
-
-            # Left leg
-            # "left_hip": "left_hip_roll_link",
-            # "left_knee": "left_knee_link",
-            "left_foot": "left_ankle_roll_link",
-
-            # Right leg
-            # "right_hip": "right_hip_roll_link",
-            # "right_knee": "right_knee_link",
-            "right_foot": "right_ankle_roll_link",
-
-            # Left arm
-            # "left_shoulder": "left_shoulder_roll_link",
-            # "left_elbow": "left_elbow_link",
-            "left_wrist": "left_wrist_yaw_link",
-
-            # Right arm
-            # "right_shoulder": "right_shoulder_roll_link",
-            # "right_elbow": "right_elbow_link",
-            "right_wrist": "right_wrist_yaw_link",
-        }
-
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
-    
+
         self.tasks1 = []
         self.tasks2 = []
-        
+
         for frame_name, entry in self.ik_match_table1.items():
             body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
             if pos_weight != 0 or rot_weight != 0:
@@ -167,7 +137,7 @@ class GeneralMotionRetargeting:
                 )
                 self.tasks1.append(task)
                 self.task_errors1[task] = []
-        
+
         for frame_name, entry in self.ik_match_table2.items():
             body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
             if pos_weight != 0 or rot_weight != 0:
@@ -203,23 +173,6 @@ class GeneralMotionRetargeting:
 
         return human_data
 
-    def update_targets(self, human_data, offset_to_ground=False):
-        # scale human data in local frame
-        human_data = self.to_numpy(human_data)
-        human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
-        human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
-        human_data = self.apply_ground_offset(human_data)
-
-        if self.contact_filter:
-            human_data = self.foot_contact_filter(human_data)
-        else:
-            self.foot_contact_data(human_data)
-
-        if offset_to_ground:
-            human_data = self.offset_human_data_to_ground(human_data)
-
-        self.scaled_human_data = human_data
-
     def retarget(self, scaled_human_data):
 
         if self.use_ik_match_table1:
@@ -227,7 +180,7 @@ class GeneralMotionRetargeting:
                 task = self.human_body_to_task1[body_name]
                 pos, rot = scaled_human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
-        
+
         if self.use_ik_match_table2:
             for body_name in self.human_body_to_task2.keys():
                 task = self.human_body_to_task2[body_name]
@@ -284,7 +237,7 @@ class GeneralMotionRetargeting:
 
         # self.debug_robot_feet(qpos)
         return self.configuration.data.qpos.copy()
-    
+
     def calculate_error_statistics_and_plot(self, save_path=None):
         """Calculate final statistics for all collected errors and log them to a file."""
         import os

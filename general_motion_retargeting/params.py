@@ -9,12 +9,13 @@ ROBOT_XML_DICT = {
 }
 
 IK_CONFIG_DICT = {
-    # offline data
     "smplx":{
         "unitree_g1": IK_CONFIG_ROOT / "smplx_to_g1.json",
     },
+    "optitrack":{
+        "unitree_g1": IK_CONFIG_ROOT / "optitrack_to_g1.json",
+    },
 }
-
 
 ROBOT_BASE_DICT = {
     "unitree_g1": "pelvis",
