@@ -9,19 +9,21 @@ def load_smpl_file(smpl_file):
     smpl_data = np.load(smpl_file, allow_pickle=True)
     return smpl_data
 
-def load_smplx_file(smplx_file, smplx_body_model_path):
+def load_smplx_file(smplx_file, body_models=None, smplx_body_model_path:str | None=None):
     smplx_data = np.load(smplx_file, allow_pickle=True)
-    body_model = smplx.create(
-        smplx_body_model_path,
-        "smplx",
-        gender=str(smplx_data["gender"]),
-        use_pca=False,
-    )
-    # print(smplx_data["pose_body"].shape)
-    # print(smplx_data["betas"].shape)
-    # print(smplx_data["root_orient"].shape)
-    # print(smplx_data["trans"].shape)
-    
+
+    if body_models is None:
+        if smplx_body_model_path is None:
+            raise ValueError("smplx_body_model_path is required if body_model is not provided")
+        body_model = smplx.create(
+            smplx_body_model_path,
+            "smplx",
+            gender=str(smplx_data["gender"]),
+            use_pca=False,
+        )
+    else:
+        body_model = body_models[str(smplx_data["gender"])]
+
     num_frames = smplx_data["pose_body"].shape[0]
     
     # betas: repeat single vector to batch size

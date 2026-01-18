@@ -79,7 +79,7 @@ class GeneralMotionRetargeting:
         self.human_scale_table = ik_config["human_scale_table"]
         self.ground = ik_config["ground_height"] * np.array([0, 0, 1])
 
-        self.max_iter = 10
+        self.max_iter = 20
 
         self.solver = solver
         self.damping = damping
@@ -110,12 +110,22 @@ class GeneralMotionRetargeting:
             VELOCITY_LIMITS = {k: 3*np.pi for k in self.robot_motor_names.keys()}
             self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS)) 
 
+        self.g1_hack = False
         self.setup_retarget_configuration()
 
         self.ground_offset = 0.0
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
+
+        if self.g1_hack:
+            # hacked initial pose for g1
+            q = self.configuration.q
+            q[7+0] = -0.5
+            q[7+6] = -0.5
+            q[7+3] = 0.5
+            q[7+9] = 0.5
+            self.configuration.update(q=q)
 
         self.tasks1 = []
         self.tasks2 = []
@@ -175,6 +185,20 @@ class GeneralMotionRetargeting:
 
     def retarget(self, scaled_human_data):
 
+        if self.g1_hack:
+            # hacked initial pose for g1
+            q = self.configuration.q
+            # should yaw
+            q[7+17] = 0.0
+            q[7+24] = 0.0
+            # elbow
+            q[7+18] = 0.5
+            q[7+25] = 0.5
+            # wrist pitch
+            q[7+20] = 0.0
+            q[7+27] = 0.0
+            self.configuration.update(q=q)
+
         if self.use_ik_match_table1:
             for body_name in self.human_body_to_task1.keys():
                 task = self.human_body_to_task1[body_name]
@@ -190,12 +214,7 @@ class GeneralMotionRetargeting:
         if self.use_ik_match_table1:
             # Solve the IK problem
             curr_error = self.error1()
-            dt = self.configuration.model.opt.timestep
-            vel1 = mink.solve_ik(
-                self.configuration, self.tasks1, dt, self.solver, self.damping, self.ik_limits
-            )
-            self.configuration.integrate_inplace(vel1, dt)
-            next_error = self.error1()
+            next_error = curr_error - 0.1
             num_iter = 0
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
                 curr_error = next_error
@@ -204,6 +223,7 @@ class GeneralMotionRetargeting:
                     self.configuration, self.tasks1, dt, self.solver, self.damping, self.ik_limits
                 )
                 self.configuration.integrate_inplace(vel1, dt)
+                self.clamp_q_to_limits()
                 next_error = self.error1()
                 num_iter += 1
             
@@ -212,12 +232,7 @@ class GeneralMotionRetargeting:
 
         if self.use_ik_match_table2:
             curr_error = self.error2()
-            dt = self.configuration.model.opt.timestep
-            vel2 = mink.solve_ik(
-                self.configuration, self.tasks2, dt, self.solver, self.damping, self.ik_limits
-            )
-            self.configuration.integrate_inplace(vel2, dt)
-            next_error = self.error2()
+            next_error = curr_error - 0.1
             num_iter = 0
 
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
@@ -228,7 +243,7 @@ class GeneralMotionRetargeting:
                     self.configuration, self.tasks2, dt, self.solver, self.damping, self.ik_limits
                 )
                 self.configuration.integrate_inplace(vel2, dt)
-                
+                self.clamp_q_to_limits()
                 next_error = self.error2()
                 num_iter += 1
             
@@ -237,6 +252,17 @@ class GeneralMotionRetargeting:
 
         # self.debug_robot_feet(qpos)
         return self.configuration.data.qpos.copy()
+
+    def clamp_q_to_limits(self):
+        q = self.configuration.q
+
+        lb = self.model.jnt_range[1:, 0]
+        ub = self.model.jnt_range[1:, 1]
+        jnt_pos = q[7:]
+        jnt_pos = np.clip(jnt_pos, lb, ub)
+        q[7:] = jnt_pos
+
+        self.configuration.update(q=q)
 
     def calculate_error_statistics_and_plot(self, save_path=None):
         """Calculate final statistics for all collected errors and log them to a file."""
