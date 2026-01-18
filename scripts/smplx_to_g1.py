@@ -178,6 +178,29 @@ def retarget_smplx(smplx_data, fps, actual_human_height, env, view):
 
     return raw_motion_data, retargeted_motion_data
 
+def load_smplx_models(smplx_folder: str):
+    body_models = {
+        "neutral": smplx.create(
+            smplx_folder,
+            "smplx",
+            gender="neutral",
+            use_pca=False,
+        ),
+        "male": smplx.create(
+            smplx_folder,
+            "smplx",
+            gender="male",
+            use_pca=False,
+        ),
+        "female": smplx.create(
+            smplx_folder,
+            "smplx",
+            gender="female",
+            use_pca=False,
+        ),
+    }
+    return body_models
+
 def load_smplx_data(smplx_file, body_models, target_fps):
 
     smplx_data, body_model, smplx_output, actual_human_height = load_smplx_file(
@@ -216,27 +239,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    SMPLX_FOLDER = HERE / ".." / "assets" / "body_models"
-    body_models = {
-        "neutral": smplx.create(
-            str(SMPLX_FOLDER),
-            "smplx",
-            gender="neutral",
-            use_pca=False,
-        ),
-        "male": smplx.create(
-            str(SMPLX_FOLDER),
-            "smplx",
-            gender="male",
-            use_pca=False,
-        ),
-        "female": smplx.create(
-            str(SMPLX_FOLDER),
-            "smplx",
-            gender="female",
-            use_pca=False,
-        ),
-    }
+    SMPLX_FOLDER = str(HERE / ".." / "assets" / "body_models")
+    body_models = load_smplx_models(SMPLX_FOLDER)
 
     smplx_data, fps, actual_human_height = load_smplx_data(args.smplx_file, body_models, 30)
 
